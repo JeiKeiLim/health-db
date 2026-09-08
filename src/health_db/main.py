@@ -158,11 +158,13 @@ def create_app() -> FastAPI:
         # Parse before the dated write: malformed/wrong-shape bytes are
         # quarantined (verbatim, 400) and never enter the dedup index or
         # the slice-2 replay corpus. The quarantine write is still
-        # archive-first — the payload is on disk before the 400 returns.
+        # archive-first — the payload is on disk before the 400 returns,
+        # with its error-note sidecar (<stem>.error.txt, spec failure
+        # table) written alongside by the module's always-on behavior.
         try:
             report = parse(body)
         except MalformedPayload as exc:
-            response, _ = handle_malformed(body, exc, store=store, error_note=False)
+            response, _ = handle_malformed(body, exc, store=store)
             app_state_stats.record_quarantined()
             return response
 

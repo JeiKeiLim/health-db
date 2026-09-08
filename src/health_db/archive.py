@@ -35,10 +35,14 @@ Duplicate index (slice 1 has no database):
 - ``find_by_sha256(sha)`` checks the in-memory index, then (incrementally)
   scans the dated tree for the payload — a fresh instance (process restart)
   rediscovers payloads archived by a previous run. The cold-start scan
-  content-indexes EVERY non-quarantine ``.json`` file it encounters,
+  content-indexes EVERY non-quarantine JSON file it encounters (extension
+  matched case-insensitively, so ``.JSON`` is a scan candidate too),
   regardless of file name, so the dedup index reflects the full existing
   corpus: re-posting any already-archived body after a restart is detected
-  as a duplicate, never written twice. Quarantined files are excluded from
+  as a duplicate, never written twice. A file that cannot be read (transient
+  I/O error) is left un-scanned, so the next scan retries it — it is only
+  marked scanned after its content sha was successfully read and indexed.
+  Quarantined files are excluded from
   that scan: quarantined content was never accepted, so it never satisfies
   a duplicate check and a re-post must be re-quarantined.
 """
@@ -74,7 +78,10 @@ class ArchiveStore:
         self._lock = threading.Lock()
         # sha256 -> archived Path (None when marked without a known path).
         self._index: dict[str, Path | None] = {}
-        # Files already considered by a disk scan (never re-read).
+        # Files already considered by a disk scan (never re-read). A file is
+        # added here only after its content sha was successfully read and
+        # indexed — a transiently unreadable file stays un-scanned and is
+        # retried by the next scan.
         self._scanned: set[Path] = set()
 
     @property
@@ -169,16 +176,27 @@ class ArchiveStore:
     def _scan_for(self, sha: str) -> Path | None:
         """Incrementally scan the dated tree for ``sha``; index and return it.
 
-        Every non-quarantine ``.json`` file encountered is content-hashed and
-        indexed the first time it is seen — including files whose name does
-        not match the ``HHMMSS-<sha8>.json`` convention — so the dedup index
-        reflects the full existing corpus and ``store()`` can never write a
-        second copy of already-archived bytes after a restart.
+        Every non-quarantine JSON file encountered (extension matched
+        case-insensitively) is content-hashed and indexed the first time it
+        is seen — including files whose name does not match the
+        ``HHMMSS-<sha8>.json`` convention — so the dedup index reflects the
+        full existing corpus and ``store()`` can never write a second copy
+        of already-archived bytes after a restart.
+
+        A file is marked scanned only AFTER its content sha was successfully
+        read and indexed: a transiently unreadable file (e.g. mid-cold-start
+        I/O hiccup) is left un-scanned, so the next scan retries it instead
+        of permanently skipping it (which could let ``store()`` write a
+        duplicate copy of its bytes).
         """
         root = self.root
         if not root.is_dir():
             return None
-        for candidate in sorted(root.rglob("*.json")):
+        for candidate in sorted(root.rglob("*")):
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() != ".json":
+                continue
             with self._lock:
                 already_scanned = candidate in self._scanned
                 self._scanned.add(candidate)
@@ -189,7 +207,11 @@ class ArchiveStore:
             try:
                 content_sha = self.sha256_of(candidate.read_bytes())
             except OSError:
-                continue  # unreadable (transient/permissions): retry next scan
+                # Unreadable (transient/permissions): revert the scanned mark
+                # so the next scan retries this file.
+                with self._lock:
+                    self._scanned.discard(candidate)
+                continue
             with self._lock:
                 # Direct assignment (not setdefault): discovering an on-disk
                 # path upgrades a mark_seen-only entry (sha -> None) to the

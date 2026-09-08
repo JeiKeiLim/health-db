@@ -238,16 +238,28 @@ class TestFailureSemantics:
         audit = client.get("/api/ingest/stats", headers=HDR).json()
         assert audit["unauthorized_attempts"] == 1
 
-    def test_malformed_json_400_quarantined(self, client, tmp_path):
+    def test_malformed_json_400_quarantined_with_error_note(self, client, tmp_path):
         res = client.post("/api/ingest", content=b"{broken", headers=HDR)
         assert res.status_code == 400
-        assert res.json()["quarantine"]
-        q = list((tmp_path / "archive" / "quarantine").rglob("*"))
+        quarantine_id = res.json()["quarantine"]
+        assert quarantine_id
+        qdir = tmp_path / "archive" / "quarantine"
+        q = list(qdir.rglob("*.json"))
         assert len(q) == 1, "malformed payload archived to quarantine/"
+        assert quarantine_id.endswith(q[0].name), "quarantine id locates the exact file"
+        # Spec failure table: an error note is stored alongside the
+        # quarantined payload (sidecar, reason text only).
+        note = q[0].with_name(q[0].stem + ".error.txt")
+        assert note.is_file(), "error-note sidecar must exist beside the quarantined payload"
+        assert note.read_text().strip(), "sidecar carries the parser's reason"
+        assert b"{broken" not in note.read_bytes(), "sidecar never echoes body content"
 
-    def test_wrong_shape_400_quarantined(self, client):
+    def test_wrong_shape_400_quarantined_with_error_note(self, client, tmp_path):
         res = client.post("/api/ingest", content=json.dumps({"nope": 1}).encode(), headers=HDR)
         assert res.status_code == 400
+        q = list((tmp_path / "archive" / "quarantine").rglob("*.json"))
+        assert len(q) == 1
+        assert q[0].with_name(q[0].stem + ".error.txt").is_file()
 
     def test_duplicate_repost_idempotent_200(self, client):
         b = body(make_metrics_payload())

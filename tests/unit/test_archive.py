@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -275,6 +276,96 @@ class TestDuplicateDetection:
             if p.read_bytes() == body and "quarantine" not in p.parts
         ]
         assert json_copies == [path], "exactly one archive copy of the body"
+
+    def test_cold_scan_indexes_uppercase_json_extension(self, store, tmp_archive_root):
+        """Regression (e2e critic note): the scan's extension check is
+        case-insensitive — a payload archived as ``.JSON`` is a scan
+        candidate, so re-posting its bytes is a duplicate, not a second
+        copy."""
+        body = make_body(42)
+        upper = tmp_archive_root / "UPPER.JSON"
+        upper.write_bytes(body)
+
+        fresh = ArchiveStore(root=tmp_archive_root)
+        path = fresh.store(body)
+        assert path == upper, ".JSON file must be indexed and satisfy the dedup check"
+        all_json = [
+            p for p in tmp_archive_root.rglob("*") if p.is_file() and "quarantine" not in p.parts
+        ]
+        assert all_json == [upper], "duplicate store must not write a second copy"
+
+    def test_cold_scan_retries_transiently_unreadable_file(
+        self, store, tmp_archive_root, monkeypatch
+    ):
+        """Regression (code_critic bug, 64a680a): a file must be marked
+        scanned only AFTER its content sha was read and indexed. A file that
+        raises OSError once (transient, e.g. during a cold-start scan) stays
+        un-scanned, so the next scan retries it — it gets indexed, and a
+        store() of its bytes is a duplicate, never a second copy."""
+        body = make_body(43)
+        flaky = tmp_archive_root / "2026" / "09" / "08" / "flaky.json"
+        flaky.parent.mkdir(parents=True)
+        flaky.write_bytes(body)
+
+        real_read_bytes = Path.read_bytes
+        state = {"failed": False}
+
+        def flaky_read_bytes(self: Path):
+            if self == flaky and not state["failed"]:
+                state["failed"] = True
+                raise OSError(11, "resource temporarily unavailable")
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+
+        fresh = ArchiveStore(root=tmp_archive_root)
+        # First scan: read of flaky.json fails -> skipped, left un-scanned.
+        assert fresh.find_by_sha256(sha(make_body(999))) is None
+        assert state["failed"] is True, "the simulated transient failure fired"
+        assert fresh.seen(sha(body)) is False, "failed read must not index the file"
+
+        # Failure was transient: the very next scan must retry the file.
+        assert fresh.find_by_sha256(sha(body)) == flaky, "retry must index the file"
+        assert fresh.seen(sha(body)) is True
+        stored = fresh.store(body)
+        assert stored == flaky, "store() dedupes against the retried-and-indexed file"
+        json_copies = [
+            p for p in tmp_archive_root.rglob("*") if p.is_file() and "quarantine" not in p.parts
+        ]
+        assert json_copies == [flaky], "no duplicate copy after the retry succeeded"
+
+    def test_cold_scan_repeatedly_unreadable_file_does_not_spin_nor_duplicate(
+        self, store, tmp_archive_root, monkeypatch
+    ):
+        """A file that stays unreadable is retried on every scan (left
+        un-scanned each time) without crashing, and store() of its bytes
+        falls through to a normal dated store (still exactly one copy of
+        the body once it is archived)."""
+        body = make_body(44)
+        unreadable = tmp_archive_root / "stubborn.json"
+        unreadable.write_bytes(body)
+
+        real_read_bytes = Path.read_bytes
+        calls = {"n": 0}
+
+        def failing_read_bytes(self: Path):
+            if self == unreadable:
+                calls["n"] += 1
+                raise OSError(13, "permission denied")
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
+
+        fresh = ArchiveStore(root=tmp_archive_root)
+        assert fresh.find_by_sha256(sha(body)) is None  # scan 1: unreadable skipped
+        assert calls["n"] >= 1, "unreadable file was attempted"
+        path = fresh.store(body)  # scan 2 via dedup lookup: still unreadable -> new store
+        assert path.is_file() and path.read_bytes() == body
+        assert path != unreadable, "unreadable file was not mistaken for the archive copy"
+        copies = [
+            p for p in tmp_archive_root.rglob("*") if p.is_file() and p.suffix.lower() == ".json"
+        ]
+        assert len(copies) == 2, "stubborn file + fresh dated store (no spin, no loss)"
 
     def test_concurrent_stores_same_body_one_file(self, store, tmp_archive_root):
         import threading
