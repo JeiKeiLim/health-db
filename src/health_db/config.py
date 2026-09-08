@@ -7,6 +7,25 @@ snapshots. Tests override the module attributes directly (see
 tests/acceptance/slice_1_ingest.py) or exercise :func:`from_env` via
 monkeypatched ``os.environ``.
 
+Normalization policy — applied uniformly to every env var:
+
+- Values are stripped of surrounding whitespace.
+- A value that is blank after stripping is treated as absent.
+- ``ARCHIVE_ROOT`` / ``APP_VERSION`` / ``INGEST_HEADER``: absent falls back to
+  the built-in default.
+- ``MAX_PAYLOAD_BYTES``: absent falls back to the default; an unparseable or
+  non-positive integer also falls back to the default (with a ``UserWarning``)
+  so a malformed limit can never crash ingest startup.
+- ``INGEST_SECRET``: key absent → ``None``; key present but blank → ``""``
+  (empty string, with a ``UserWarning``).
+
+Fail-closed auth policy (spec §Auth Flow): a missing or empty
+``INGEST_SECRET`` never disables authentication. The auth layer (slice-1-auth)
+MUST reject every ingest request while the configured secret is ``None`` or
+``""`` — a blank secret means "deny all", never "allow all". The warning on a
+present-but-blank secret exists so operators notice the misconfiguration; it
+never includes the secret value itself.
+
 Secrets are never logged: :class:`Settings.__repr__` redacts ``ingest_secret``
 (iron law 1), and no code path in this module emits secret values.
 """
@@ -14,6 +33,7 @@ Secrets are never logged: :class:`Settings.__repr__` redacts ``ingest_secret``
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,10 +58,6 @@ ENV_KEYS = (
 DEFAULT_ARCHIVE_ROOT: Path = Path("data") / "archive"
 DEFAULT_INGEST_HEADER = "X-Ingest-Token"
 DEFAULT_MAX_PAYLOAD_BYTES = 67_108_864  # 64 MiB
-
-
-class ConfigError(ValueError):
-    """Raised when env values cannot be parsed into valid settings."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,42 +85,70 @@ class Settings:
         return f"{type(self).__name__}({fields})"
 
 
-def _read_env(environ: dict[str, str]) -> Settings:
-    secret = environ.get(ENV_INGEST_SECRET) or None
-    header = environ.get(ENV_INGEST_HEADER, DEFAULT_INGEST_HEADER).strip()
-    if not header:
-        raise ConfigError(f"{ENV_INGEST_HEADER} is set but empty; expected a header name")
-    raw_max = environ.get(ENV_MAX_PAYLOAD_BYTES)
-    max_payload = DEFAULT_MAX_PAYLOAD_BYTES if raw_max is None else _parse_int(raw_max)
-    raw_root = environ.get(ENV_ARCHIVE_ROOT)
-    archive_root = Path(raw_root) if raw_root else DEFAULT_ARCHIVE_ROOT
-    app_version = environ.get(ENV_APP_VERSION, __version__).strip() or __version__
-    return Settings(
-        archive_root=archive_root,
-        ingest_header=header,
-        max_payload_bytes=max_payload,
-        app_version=app_version,
-        ingest_secret=secret,
-    )
+def _stripped(environ: dict[str, str], key: str) -> str | None:
+    """Env value with surrounding whitespace removed; blank → None (absent)."""
+    raw = environ.get(key)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
 
 
-def _parse_int(raw: str) -> int:
+def _max_payload_bytes(environ: dict[str, str]) -> int:
+    """Parse MAX_PAYLOAD_BYTES; absent/invalid/non-positive → default (+warning)."""
+    raw = _stripped(environ, ENV_MAX_PAYLOAD_BYTES)
+    if raw is None:
+        return DEFAULT_MAX_PAYLOAD_BYTES
     try:
-        value = int(raw.strip())
-    except ValueError as exc:
-        raise ConfigError(
-            f"{ENV_MAX_PAYLOAD_BYTES} must be an integer number of bytes, got {raw!r}"
-        ) from exc
+        value = int(raw)
+    except ValueError:
+        warnings.warn(
+            f"{ENV_MAX_PAYLOAD_BYTES}={raw!r} is not an integer; "
+            f"falling back to the default ({DEFAULT_MAX_PAYLOAD_BYTES} bytes)"
+        )
+        return DEFAULT_MAX_PAYLOAD_BYTES
     if value <= 0:
-        raise ConfigError(f"{ENV_MAX_PAYLOAD_BYTES} must be a positive integer, got {value}")
+        warnings.warn(
+            f"{ENV_MAX_PAYLOAD_BYTES} must be a positive integer, got {value}; "
+            f"falling back to the default ({DEFAULT_MAX_PAYLOAD_BYTES} bytes)"
+        )
+        return DEFAULT_MAX_PAYLOAD_BYTES
     return value
+
+
+def _ingest_secret(environ: dict[str, str]) -> str | None:
+    """INGEST_SECRET: unset → None; set-but-blank → "" (fail-closed, see module docs)."""
+    raw = environ.get(ENV_INGEST_SECRET)
+    if raw is None:
+        return None
+    secret = raw.strip()
+    if not secret:
+        warnings.warn(
+            f"{ENV_INGEST_SECRET} is set but blank; ingest auth will fail closed — "
+            "every request is rejected until a non-empty secret is configured"
+        )
+    return secret
+
+
+def _read_env(environ: dict[str, str]) -> Settings:
+    archive_root = _stripped(environ, ENV_ARCHIVE_ROOT)
+    header = _stripped(environ, ENV_INGEST_HEADER)
+    app_version = _stripped(environ, ENV_APP_VERSION)
+    return Settings(
+        archive_root=Path(archive_root) if archive_root else DEFAULT_ARCHIVE_ROOT,
+        ingest_header=header or DEFAULT_INGEST_HEADER,
+        max_payload_bytes=_max_payload_bytes(environ),
+        app_version=app_version or __version__,
+        ingest_secret=_ingest_secret(environ),
+    )
 
 
 def from_env(environ: dict[str, str] | None = None) -> Settings:
     """Build a Settings snapshot from ``os.environ`` (or an injected mapping).
 
     Passing ``environ`` explicitly keeps this pure and lets unit tests feed a
-    dict instead of mutating process state.
+    dict instead of mutating process state. See the module docstring for the
+    normalization and fail-closed auth policies.
     """
     return _read_env(dict(os.environ if environ is None else environ))
 

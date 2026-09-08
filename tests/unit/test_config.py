@@ -1,27 +1,21 @@
 """Unit tests for health_db.config — defaults, env overrides, secret redaction.
 
 Covers decomposition job slice-1-config acceptance: monkeypatch-driven env
-overrides, default values, validation failures, and the no-secret-leak rule.
+overrides, default values, validation, the uniform strip/blank-normalization
+policy, and the no-secret-leak rule.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import os
+import warnings
 from pathlib import Path
 
 import pytest
 
 from health_db import __version__
 from health_db import config as cfg
-from health_db.config import ConfigError, Settings, from_env
-
-
-def environ_of(**overrides: str) -> dict[str, str]:
-    base = {k: v for k, v in os.environ.items() if k not in cfg.ENV_KEYS}
-    base.update(overrides)
-    return base
-
+from health_db.config import Settings, from_env
 
 # ---------------------------------------------------------------------------
 # Defaults (no relevant env vars set)
@@ -85,9 +79,11 @@ class TestEnvOverrides:
         assert s.max_payload_bytes == 2048
         assert s.archive_root == Path("data/other-archive")
 
-    def test_empty_ingest_secret_treated_as_unset(self):
-        s = from_env({"INGEST_SECRET": ""})
-        assert s.ingest_secret is None
+    def test_empty_ingest_secret_is_blank_string_fail_closed(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            s = from_env({"INGEST_SECRET": ""})
+        assert s.ingest_secret == ""
 
     def test_missing_ingest_secret_is_none_not_error(self):
         assert from_env({}).ingest_secret is None
@@ -99,23 +95,21 @@ class TestEnvOverrides:
 
 
 class TestValidation:
-    def test_max_payload_bytes_rejects_non_integer(self):
-        with pytest.raises(ConfigError, match="MAX_PAYLOAD_BYTES"):
-            from_env({"MAX_PAYLOAD_BYTES": "64MiB"})
+    def test_empty_ingest_header_falls_back_to_default(self):
+        s = from_env({"INGEST_HEADER": "   "})
+        assert s.ingest_header == "X-Ingest-Token"
 
-    def test_max_payload_bytes_rejects_zero_and_negative(self):
-        with pytest.raises(ConfigError, match="positive"):
-            from_env({"MAX_PAYLOAD_BYTES": "0"})
-        with pytest.raises(ConfigError, match="positive"):
-            from_env({"MAX_PAYLOAD_BYTES": "-5"})
+    def test_whitespace_ingest_header_is_stripped(self):
+        s = from_env({"INGEST_HEADER": "  X-Custom-Token  "})
+        assert s.ingest_header == "X-Custom-Token"
 
-    def test_max_payload_bytes_accepts_surrounding_whitespace(self):
-        s = from_env({"MAX_PAYLOAD_BYTES": " 2048 "})
-        assert s.max_payload_bytes == 2048
+    def test_whitespace_archive_root_is_stripped(self):
+        s = from_env({"ARCHIVE_ROOT": "  data/other-archive  "})
+        assert s.archive_root == Path("data/other-archive")
 
-    def test_empty_ingest_header_rejected(self):
-        with pytest.raises(ConfigError, match="INGEST_HEADER"):
-            from_env({"INGEST_HEADER": "   "})
+    def test_whitespace_app_version_is_stripped(self):
+        s = from_env({"APP_VERSION": "  9.9.9-test  "})
+        assert s.app_version == "9.9.9-test"
 
     def test_blank_app_version_falls_back_to_package_version(self):
         s = from_env({"APP_VERSION": "   "})
@@ -124,6 +118,49 @@ class TestValidation:
     def test_empty_archive_root_falls_back_to_default(self):
         s = from_env({"ARCHIVE_ROOT": ""})
         assert s.archive_root == Path("data/archive")
+
+    def test_invalid_max_payload_bytes_falls_back_to_default_with_warning(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            s = from_env({"MAX_PAYLOAD_BYTES": "64MiB"})
+        assert s.max_payload_bytes == cfg.DEFAULT_MAX_PAYLOAD_BYTES
+        assert any("MAX_PAYLOAD_BYTES" in str(w.message) for w in caught)
+
+    def test_zero_and_negative_max_payload_bytes_fall_back_with_warning(self):
+        for bad in ("0", "-5"):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                s = from_env({"MAX_PAYLOAD_BYTES": bad})
+            assert s.max_payload_bytes == cfg.DEFAULT_MAX_PAYLOAD_BYTES
+            assert any("positive" in str(w.message) for w in caught)
+
+    def test_blank_max_payload_bytes_falls_back_to_default(self):
+        s = from_env({"MAX_PAYLOAD_BYTES": "   "})
+        assert s.max_payload_bytes == cfg.DEFAULT_MAX_PAYLOAD_BYTES
+
+    def test_whitespace_ingest_secret_is_stripped(self):
+        s = from_env({"INGEST_SECRET": "  s3cret-value  "})
+        assert s.ingest_secret == "s3cret-value"
+
+    def test_blank_ingest_secret_is_empty_string_with_warning(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            s = from_env({"INGEST_SECRET": "   "})
+        assert s.ingest_secret == ""
+        assert any("fail closed" in str(w.message) for w in caught)
+
+    def test_blank_ingest_secret_warning_never_contains_value(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            from_env({"INGEST_SECRET": "   "})
+        assert all("s3cret" not in str(w.message) for w in caught)
+
+    def test_no_warning_on_fully_absent_vars(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            s = from_env({})
+        assert s.ingest_secret is None
+        assert s.max_payload_bytes == cfg.DEFAULT_MAX_PAYLOAD_BYTES
 
 
 # ---------------------------------------------------------------------------
