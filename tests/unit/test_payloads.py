@@ -409,6 +409,44 @@ class TestPartialKeyOverlapNotRecognized:
         report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08", "asleep": 7.0}])]))
         assert len(report.unknown_formats) == 1
 
+    def test_sleep_unaggregated_missing_value_is_unknown(self):
+        # {startDate, endDate, qty} without "value" partially overlaps the
+        # sleep_analysis_unaggregated shape → must NOT be recognized.
+        report = parse(
+            wrap(
+                [
+                    metric(
+                        "sleep_analysis_unagg",
+                        [{"startDate": "s", "endDate": "e", "qty": 1.5}],
+                    )
+                ]
+            )
+        )
+        assert len(report.unknown_formats) == 1
+        entry = report.unknown_formats[0]
+        assert "unrecognized data-point shape" in entry["reason"]
+        assert "'endDate', 'qty', 'startDate'" in entry["reason"]
+        assert "'value'" not in entry["reason"]
+
+    def test_sleep_unaggregated_missing_qty_is_unknown(self):
+        # {startDate, endDate, value} without "qty" partially overlaps the
+        # sleep_analysis_unaggregated shape → must NOT be recognized.
+        report = parse(
+            wrap(
+                [
+                    metric(
+                        "sleep_analysis_unagg",
+                        [{"startDate": "s", "endDate": "e", "value": "Deep"}],
+                    )
+                ]
+            )
+        )
+        assert len(report.unknown_formats) == 1
+        entry = report.unknown_formats[0]
+        assert "unrecognized data-point shape" in entry["reason"]
+        assert "'endDate', 'startDate', 'value'" in entry["reason"]
+        assert "'qty'" not in entry["reason"]
+
     def test_qty_without_date_is_unknown(self):
         report = parse(wrap([metric("step_count", [{"qty": 8500}])]))
         assert len(report.unknown_formats) == 1
