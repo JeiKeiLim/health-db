@@ -211,6 +211,71 @@ class TestDuplicateDetection:
         fresh = ArchiveStore(root=tmp_archive_root)
         assert fresh.find_by_sha256(sha(make_body(999))) is None
 
+    def test_restart_store_of_foreign_named_payload_is_duplicate(self, store, tmp_archive_root):
+        """Regression (code_critic bug): after a restart, the cold-start scan
+        must content-index EVERY archived file — including one saved under a
+        foreign/non-conventional name (no sha8 stem) — so re-posting its
+        bytes is detected as a duplicate instead of writing a second copy."""
+        body = make_body(15)
+        foreign = tmp_archive_root / "foreign.json"  # not YYYY/MM/DD/HHMMSS-sha8.json
+        foreign.write_bytes(body)
+
+        fresh = ArchiveStore(root=tmp_archive_root)  # restart: empty index
+        assert fresh.seen(sha(body)) is False, "no index knowledge before any lookup"
+
+        path = fresh.store(body)  # must dedupe, not write a second copy
+        assert path == foreign, "store() must return the existing archive path"
+        assert fresh.seen(sha(body)) is True
+        all_json = list(tmp_archive_root.rglob("*.json"))
+        assert all_json == [foreign], "duplicate store must not write a second copy"
+
+    def test_cold_scan_indexes_all_files_then_dedupes_across_lookups(self, store, tmp_archive_root):
+        """A miss lookup (different sha) must still index every scanned file's
+        content sha, so a later store() of those bodies is a duplicate hit."""
+        b1, b2 = make_body(31), make_body(32)
+        p1 = store.store(b1)
+        store.store(b2)
+        fresh = ArchiveStore(root=tmp_archive_root)
+
+        assert fresh.find_by_sha256(sha(make_body(999))) is None  # full miss drives the scan
+
+        assert fresh.store(b1) == p1, "post-scan store must dedupe against indexed corpus"
+        archived = [p for p in tmp_archive_root.rglob("*.json") if "quarantine" not in p.parts]
+        assert len(archived) == 2, "no second copies after restart + re-post"
+
+    def test_cold_scan_skips_quarantine_files(self, store, tmp_archive_root):
+        """Quarantined content was never accepted: it must not enter the dedup
+        index, so a re-post of those bytes is stored (dated tree) anew."""
+        qbody = b"{broken"
+        store.store(qbody, quarantine=True)
+        fresh = ArchiveStore(root=tmp_archive_root)
+
+        assert fresh.find_by_sha256(sha(qbody)) is None  # scan runs, quarantine skipped
+        path = fresh.store(qbody)
+        assert path.parent == tmp_archive_root / "2026" / "09" / "08", "re-post stored normally"
+        assert fresh.seen(sha(qbody)) is True
+        quarantined = list((tmp_archive_root / "quarantine").rglob("*.json"))
+        assert len(quarantined) == 1, "no second quarantine copy"
+
+    def test_cold_scan_ignores_non_json_files(self, store, tmp_archive_root):
+        """Only ``.json`` files are scan candidates: other files are neither
+        indexed nor crash the scan, and their bytes may still be stored."""
+        body = make_body(41)
+        (tmp_archive_root / "notes.txt").write_bytes(body)  # same bytes, wrong extension
+        (tmp_archive_root / "sub").mkdir()
+        (tmp_archive_root / "sub" / "x.json").write_bytes(b"not-json-at-all")
+
+        fresh = ArchiveStore(root=tmp_archive_root)
+        path = fresh.store(body)  # must not crash on non-json files
+        assert path.read_bytes() == body
+        assert path.name == f"100000-{sha(body)[:8]}.json", "stored under dated layout"
+        json_copies = [
+            p
+            for p in tmp_archive_root.rglob("*.json")
+            if p.read_bytes() == body and "quarantine" not in p.parts
+        ]
+        assert json_copies == [path], "exactly one archive copy of the body"
+
     def test_concurrent_stores_same_body_one_file(self, store, tmp_archive_root):
         import threading
 

@@ -34,9 +34,13 @@ Duplicate index (slice 1 has no database):
   so re-running ingest or replay is always a no-op on the archive tree.
 - ``find_by_sha256(sha)`` checks the in-memory index, then (incrementally)
   scans the dated tree for the payload — a fresh instance (process restart)
-  rediscovers payloads archived by a previous run. Quarantined files are
-  excluded from that scan: quarantined content was never accepted, so it
-  never satisfies a duplicate check and a re-post must be re-quarantined.
+  rediscovers payloads archived by a previous run. The cold-start scan
+  content-indexes EVERY non-quarantine ``.json`` file it encounters,
+  regardless of file name, so the dedup index reflects the full existing
+  corpus: re-posting any already-archived body after a restart is detected
+  as a duplicate, never written twice. Quarantined files are excluded from
+  that scan: quarantined content was never accepted, so it never satisfies
+  a duplicate check and a re-post must be re-quarantined.
 """
 
 from __future__ import annotations
@@ -163,8 +167,14 @@ class ArchiveStore:
         return path
 
     def _scan_for(self, sha: str) -> Path | None:
-        """Incrementally scan the dated tree for ``sha``; index and return it."""
-        sha8 = sha[:8]
+        """Incrementally scan the dated tree for ``sha``; index and return it.
+
+        Every non-quarantine ``.json`` file encountered is content-hashed and
+        indexed the first time it is seen — including files whose name does
+        not match the ``HHMMSS-<sha8>.json`` convention — so the dedup index
+        reflects the full existing corpus and ``store()`` can never write a
+        second copy of already-archived bytes after a restart.
+        """
         root = self.root
         if not root.is_dir():
             return None
@@ -176,10 +186,15 @@ class ArchiveStore:
                 continue
             if _QUARANTINE_DIR in candidate.relative_to(root).parts:
                 continue
-            if sha8 not in candidate.stem.split("-"):
-                continue
-            if self.sha256_of(candidate.read_bytes()) == sha:
-                with self._lock:
-                    self._index[sha] = candidate
+            try:
+                content_sha = self.sha256_of(candidate.read_bytes())
+            except OSError:
+                continue  # unreadable (transient/permissions): retry next scan
+            with self._lock:
+                # Direct assignment (not setdefault): discovering an on-disk
+                # path upgrades a mark_seen-only entry (sha -> None) to the
+                # real location; a stale path for a deleted file is replaced.
+                self._index[content_sha] = candidate
+            if content_sha == sha:
                 return candidate
         return None
