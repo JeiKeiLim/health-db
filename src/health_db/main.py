@@ -10,7 +10,7 @@ Wires the slice-1 ingest service around the finished slice-1 modules:
 - ``health_db.failures`` — oversize (413, nothing archived) and
   malformed/wrong-shape (400, verbatim quarantine) semantics.
 - ``health_db.archive`` — verbatim archive-first store (iron law 2) with
-  the in-process sha256 dedup index.
+  the in-process sha256 dedup index backed by the persistent disk archive.
 - ``health_db.payloads`` — pure parse/report (counts, ``data_type``,
   ``unknown_formats``).
 
@@ -27,7 +27,9 @@ Pipeline for ``POST /api/ingest`` (order is the contract):
    dated dedup tree or the slice-2 replay corpus. Every authorized body
    still reaches disk before its outcome is returned (iron law 2), and a
    re-post of bad bytes is re-quarantined, never deduped.
-4. **Duplicate check** — a sha256 already in the archive index returns
+4. **Duplicate check** — a sha256 already archived (in-memory index OR the
+   disk-backed index restored by the cold-start scan, so a process restart
+   against an existing archive dir is honored) returns
    ``{"outcome": "duplicate"}`` (200, idempotent, no reprocessing); the
    dated tree is not rewritten.
 5. **Verbatim archive** — atomic dated write ``YYYY/MM/DD/HHMMSS-<sha8>.json``.
@@ -169,7 +171,13 @@ def create_app() -> FastAPI:
             return response
 
         content_sha = store.sha256_of(body)
-        if store.seen(content_sha):
+        # Duplicate gate consults BOTH indexes: the in-memory ``seen()`` set
+        # (fast path, same process) and the persistent disk-backed archive
+        # index via :meth:`ArchiveStore.find_by_sha256` — a restart-restored
+        # archive (empty in-memory index) must still yield
+        # ``{"outcome": "duplicate"}`` with no second copy, never a
+        # re-store that double-counts into stats.stored.
+        if store.seen(content_sha) or store.find_by_sha256(content_sha) is not None:
             app_state_stats.record_duplicate()
             return JSONResponse(
                 status_code=200,

@@ -338,6 +338,129 @@ class TestUnknownMetricAccepted:
 
 
 # ---------------------------------------------------------------------------
+# Regression (code_critic product_bug, retry #4): restart-restored archive
+# must dedupe — the duplicate gate consults the persistent disk index, not
+# just the in-memory seen() set (anti-scenario 1: no double counts ever).
+# ---------------------------------------------------------------------------
+
+
+class TestRestartRestoredArchiveDedupes:
+    """Fresh app instance (simulated service restart) against the SAME
+    archive dir: re-posting identical bytes must return the idempotent
+    ``{"outcome": "duplicate"}`` and stats must show duplicate=1 / stored
+    unchanged — the disk archive is the source of truth across restarts."""
+
+    def test_repost_identical_bytes_after_restart_is_duplicate(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import health_db.config as config
+        import health_db.main as main_mod
+
+        monkeypatch.setattr(config, "ARCHIVE_ROOT", tmp_path / "archive")
+        monkeypatch.setattr(config, "INGEST_SECRET", "test-secret-token")
+        monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
+        monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
+
+        b = body(make_metrics_payload())
+        archived_before = None
+
+        # "Process 1": store the payload.
+        with TestClient(main_mod.app) as first:
+            res = first.post("/api/ingest", content=b, headers=HDR)
+            assert res.status_code == 200
+            assert res.json()["outcome"] == "stored"
+            archived_before = res.json()["archive_path"]
+            stats1 = first.get("/api/ingest/stats", headers=HDR).json()
+            assert stats1["stored"] == 1 and stats1["duplicate"] == 0
+
+        # "Process 2" (restart): a brand-new app instance — fresh in-memory
+        # stats/audit/archive state — pointed at the same archive dir.
+        with TestClient(main_mod.app) as restarted:
+            repost = restarted.post("/api/ingest", content=b, headers=HDR)
+            assert repost.status_code == 200
+            out = repost.json()
+            assert out["outcome"] == "duplicate", (
+                "restart-restored archive must dedupe re-posted identical bytes"
+            )
+            assert out["sha256"] == sha(b)
+
+            # Stats of the new process: the repost counted as duplicate,
+            # stored unchanged (no double-count into the fresh counters).
+            stats2 = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert stats2["duplicate"] == 1
+            assert stats2["stored"] == 0, "re-post must not bump stored after restart"
+            assert stats2["received"] == 1
+
+            # Disk integrity: no second copy was written.
+            stored_files = [
+                p for p in (tmp_path / "archive").rglob("*.json") if "quarantine" not in p.parts
+            ]
+            assert len(stored_files) == 1
+            assert stored_files[0].read_bytes() == b
+            assert str(stored_files[0]) == archived_before, (
+                "the original archive path survives the restart untouched"
+            )
+
+            # A *different* payload in the restarted process stores normally.
+            other = body(make_workout_payload())
+            res3 = restarted.post("/api/ingest", content=other, headers=HDR)
+            assert res3.status_code == 200
+            assert res3.json()["outcome"] == "stored"
+            final = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert final["stored"] == 1 and final["duplicate"] == 1
+
+    def test_repost_of_foreign_named_archived_payload_is_duplicate(self, tmp_path, monkeypatch):
+        """Restart + re-post where the archived file does not follow the
+        dated naming convention (operator-copied corpus): the disk scan
+        content-indexes it, so the re-post is still a duplicate."""
+        from fastapi.testclient import TestClient
+
+        import health_db.config as config
+        import health_db.main as main_mod
+
+        monkeypatch.setattr(config, "ARCHIVE_ROOT", tmp_path / "archive")
+        monkeypatch.setattr(config, "INGEST_SECRET", "test-secret-token")
+        monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
+        monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
+
+        b = body(make_metrics_payload())
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir(parents=True)
+        foreign = archive_dir / "hand-placed.json"
+        foreign.write_bytes(b)
+
+        with TestClient(main_mod.app) as restarted:
+            repost = restarted.post("/api/ingest", content=b, headers=HDR)
+            assert repost.status_code == 200
+            assert repost.json()["outcome"] == "duplicate"
+            stats = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert stats["duplicate"] == 1 and stats["stored"] == 0
+            files = [p for p in (tmp_path / "archive").rglob("*.json")]
+            assert files == [foreign], "no second copy of the foreign-named payload"
+
+    def test_new_payload_after_restart_stores_normally(self, tmp_path, monkeypatch):
+        """The disk-backed gate must not over-dedupe: a payload whose bytes
+        were never archived stores normally after a restart."""
+        from fastapi.testclient import TestClient
+
+        import health_db.config as config
+        import health_db.main as main_mod
+
+        monkeypatch.setattr(config, "ARCHIVE_ROOT", tmp_path / "archive")
+        monkeypatch.setattr(config, "INGEST_SECRET", "test-secret-token")
+        monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
+        monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
+
+        b = body(make_metrics_payload())
+        with TestClient(main_mod.app) as restarted:
+            res = restarted.post("/api/ingest", content=b, headers=HDR)
+            assert res.status_code == 200
+            assert res.json()["outcome"] == "stored"
+            stats = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert stats["stored"] == 1 and stats["duplicate"] == 0
+
+
+# ---------------------------------------------------------------------------
 # HAE automation headers → stats.last_automation wiring (spec §API Endpoints)
 # ---------------------------------------------------------------------------
 
