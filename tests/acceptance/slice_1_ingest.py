@@ -15,10 +15,24 @@ stats. NO PostgreSQL writes in this slice.
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.slice1
+
+# The stored-outcome response contract (spec §API Endpoints): exactly these
+# 8 keys, every one asserted in the acceptance tests below.
+STORED_RESPONSE_KEYS = {
+    "outcome",
+    "data_type",
+    "metrics",
+    "samples",
+    "workouts",
+    "unknown_formats",
+    "archive_path",
+    "sha256",
+}
 
 # ---------------------------------------------------------------------------
 # Fixtures: realistic HAE JSON v2 payload shapes (from research/hae-json-v2-format.md)
@@ -108,6 +122,24 @@ def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def assert_stored_shape(out: dict) -> None:
+    """Assert the full 8-key stored-response contract (no missing, no extra)."""
+    assert set(out) == STORED_RESPONSE_KEYS, (
+        f"stored response must carry exactly the 8 contract keys; got {sorted(out)}"
+    )
+    assert out["outcome"] == "stored"
+    assert isinstance(out["data_type"], str) and out["data_type"] in {"metrics", "workouts"}
+    assert isinstance(out["metrics"], int) and out["metrics"] >= 0
+    assert isinstance(out["samples"], int) and out["samples"] >= 0
+    assert isinstance(out["workouts"], int) and out["workouts"] >= 0
+    assert isinstance(out["unknown_formats"], list)
+    for entry in out["unknown_formats"]:
+        assert set(entry) == {"name", "units", "reason"}
+    assert out["archive_path"], "must report the on-disk archive path"
+    assert Path(out["archive_path"]).is_file(), "reported archive_path must exist on disk"
+    assert isinstance(out["sha256"], str) and len(out["sha256"]) == 64
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     """ASGI TestClient wired to a temp archive dir + known token."""
@@ -139,20 +171,26 @@ class TestAcceptsAndArchives:
         res = client.post("/api/ingest", content=b, headers=HDR)
         assert res.status_code == 200
         out = res.json()
-        assert out["outcome"] == "stored"
+        assert_stored_shape(out)
+        assert out["data_type"] == "metrics"
         assert out["metrics"] == 3  # 3 metric groups seen
         assert out["samples"] == 4  # 2+1+1 data points
         assert out["workouts"] == 0
+        assert out["unknown_formats"] == []
         assert out["sha256"] == sha(b)
-        assert out["archive_path"], "must report on-disk archive path"
 
     def test_valid_workout_payload_200_stored(self, client):
         b = body(make_workout_payload())
         res = client.post("/api/ingest", content=b, headers=HDR)
         assert res.status_code == 200
         out = res.json()
-        assert out["outcome"] == "stored"
+        assert_stored_shape(out)
+        assert out["data_type"] == "workouts"
+        assert out["metrics"] == 0
+        assert out["samples"] == 0
         assert out["workouts"] == 1
+        assert out["unknown_formats"] == []
+        assert out["sha256"] == sha(b)
 
     def test_payload_archived_verbatim_on_disk(self, client, tmp_path):
         b = body(make_metrics_payload())
@@ -283,5 +321,83 @@ class TestUnknownMetricAccepted:
         res = client.post("/api/ingest", content=body(payload), headers=HDR)
         assert res.status_code == 200
         out = res.json()
-        assert out["outcome"] == "stored"
+        assert_stored_shape(out)
         assert out["metrics"] == 1
+
+
+# ---------------------------------------------------------------------------
+# HAE automation headers → stats.last_automation wiring (spec §API Endpoints)
+# ---------------------------------------------------------------------------
+
+
+class TestAutomationHeadersToStats:
+    def test_automation_headers_flow_to_stats_last_automation(self, client):
+        """POST with the HAE automation headers → GET /api/ingest/stats
+        (authed) reports last_automation reflecting automation-name."""
+        headers = {
+            **HDR,
+            "automation-name": "metrics-all",
+            "automation-id": "B14E8EA2-9C43-4FBB-9BC1-A5C57D0D2B4F",
+            "session-id": "e5f6a7b8-c9d0-4e1f-a2b3-4c5d6e7f8a90",
+        }
+        res = client.post("/api/ingest", content=body(make_metrics_payload()), headers=headers)
+        assert res.status_code == 200
+        assert res.json()["outcome"] == "stored"
+
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert stats["last_automation"] is not None
+        assert "automation-name=metrics-all" in stats["last_automation"]
+        assert "automation-id=B14E8EA2-9C43-4FBB-9BC1-A5C57D0D2B4F" in stats["last_automation"]
+        assert "session-id=e5f6a7b8-c9d0-4e1f-a2b3-4c5d6e7f8a90" in stats["last_automation"]
+
+    def test_second_automation_overwrites_last_automation(self, client):
+        """The most recent labeled payload wins (hourly automations differ)."""
+        client.post(
+            "/api/ingest",
+            content=body(make_metrics_payload()),
+            headers={**HDR, "automation-name": "metrics-all"},
+        )
+        client.post(
+            "/api/ingest",
+            content=body(make_workout_payload()),
+            headers={**HDR, "automation-name": "workouts"},
+        )
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert "automation-name=workouts" in stats["last_automation"]
+        assert "automation-name=metrics-all" not in stats["last_automation"]
+
+    def test_missing_automation_headers_leave_last_automation_unchanged(self, client):
+        """A later payload without automation headers must NOT clear or
+        replace the previous label (stats contract: label kept, not reset)."""
+        client.post(
+            "/api/ingest",
+            content=body(make_metrics_payload()),
+            headers={**HDR, "automation-name": "metrics-hr-steps"},
+        )
+        before = client.get("/api/ingest/stats", headers=HDR).json()["last_automation"]
+        assert before is not None
+
+        res = client.post("/api/ingest", content=body(make_workout_payload()), headers=HDR)
+        assert res.status_code == 200
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert stats["last_automation"] == before, (
+            "unlabeled payload keeps the previous last_automation"
+        )
+
+    def test_no_automation_headers_ever_last_automation_stays_none(self, client):
+        """Without any labeled payload, last_automation stays None."""
+        res = client.post("/api/ingest", content=body(make_metrics_payload()), headers=HDR)
+        assert res.status_code == 200
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert stats["last_automation"] is None
+        assert stats["received"] == 1 and stats["stored"] == 1
+
+    def test_partial_automation_headers_label_only_present_ones(self, client):
+        """Only present headers contribute to the label (fixed order k=v)."""
+        client.post(
+            "/api/ingest",
+            content=body(make_metrics_payload()),
+            headers={**HDR, "automation-name": "workouts", "session-id": "s-123"},
+        )
+        label = client.get("/api/ingest/stats", headers=HDR).json()["last_automation"]
+        assert label == "automation-name=workouts; session-id=s-123"
