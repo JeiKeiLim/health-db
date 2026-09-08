@@ -45,6 +45,8 @@ ENV_INGEST_SECRET = "INGEST_SECRET"
 ENV_INGEST_HEADER = "INGEST_HEADER"
 ENV_MAX_PAYLOAD_BYTES = "MAX_PAYLOAD_BYTES"
 ENV_APP_VERSION = "APP_VERSION"
+ENV_HOST = "HOST"
+ENV_PORT = "PORT"
 
 ENV_KEYS = (
     ENV_ARCHIVE_ROOT,
@@ -52,12 +54,16 @@ ENV_KEYS = (
     ENV_INGEST_HEADER,
     ENV_MAX_PAYLOAD_BYTES,
     ENV_APP_VERSION,
+    ENV_HOST,
+    ENV_PORT,
 )
 
 # --- Defaults (spec §API Endpoints + decomposition job slice-1-config) ---
 DEFAULT_ARCHIVE_ROOT: Path = Path("data") / "archive"
 DEFAULT_INGEST_HEADER = "X-Ingest-Token"
 DEFAULT_MAX_PAYLOAD_BYTES = 67_108_864  # 64 MiB
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8000
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +75,8 @@ class Settings:
     max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES
     app_version: str = __version__
     ingest_secret: str | None = None
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
 
     def redacted(self) -> dict[str, object]:
         """Secret-free snapshot dict, safe for logs/stats/error notes."""
@@ -78,6 +86,8 @@ class Settings:
             "max_payload_bytes": self.max_payload_bytes,
             "app_version": self.app_version,
             "ingest_secret": "***" if self.ingest_secret else None,
+            "host": self.host,
+            "port": self.port,
         }
 
     def __repr__(self) -> str:  # iron law 1: never surface the secret
@@ -130,16 +140,41 @@ def _ingest_secret(environ: dict[str, str]) -> str | None:
     return secret
 
 
+def _port(environ: dict[str, str]) -> int:
+    """Parse PORT; absent → default, invalid/out-of-range → default (+warning)."""
+    raw = _stripped(environ, ENV_PORT)
+    if raw is None:
+        return DEFAULT_PORT
+    try:
+        value = int(raw)
+    except ValueError:
+        warnings.warn(
+            f"{ENV_PORT}={raw!r} is not an integer; "
+            f"falling back to the default ({DEFAULT_PORT})"
+        )
+        return DEFAULT_PORT
+    if not 1 <= value <= 65535:
+        warnings.warn(
+            f"{ENV_PORT} must be in 1..65535, got {value}; "
+            f"falling back to the default ({DEFAULT_PORT})"
+        )
+        return DEFAULT_PORT
+    return value
+
+
 def _read_env(environ: dict[str, str]) -> Settings:
     archive_root = _stripped(environ, ENV_ARCHIVE_ROOT)
     header = _stripped(environ, ENV_INGEST_HEADER)
     app_version = _stripped(environ, ENV_APP_VERSION)
+    host = _stripped(environ, ENV_HOST)
     return Settings(
         archive_root=Path(archive_root) if archive_root else DEFAULT_ARCHIVE_ROOT,
         ingest_header=header or DEFAULT_INGEST_HEADER,
         max_payload_bytes=_max_payload_bytes(environ),
         app_version=app_version or __version__,
         ingest_secret=_ingest_secret(environ),
+        host=host or DEFAULT_HOST,
+        port=_port(environ),
     )
 
 
@@ -155,12 +190,15 @@ def from_env(environ: dict[str, str] | None = None) -> Settings:
 
 def apply(settings: Settings) -> None:
     """Publish a Settings snapshot onto the module-level live attributes."""
-    global ARCHIVE_ROOT, INGEST_HEADER, INGEST_SECRET, MAX_PAYLOAD_BYTES, APP_VERSION
+    global ARCHIVE_ROOT, INGEST_HEADER, INGEST_SECRET, MAX_PAYLOAD_BYTES
+    global APP_VERSION, HOST, PORT
     ARCHIVE_ROOT = settings.archive_root
     INGEST_HEADER = settings.ingest_header
     MAX_PAYLOAD_BYTES = settings.max_payload_bytes
     APP_VERSION = settings.app_version
     INGEST_SECRET = settings.ingest_secret
+    HOST = settings.host
+    PORT = settings.port
 
 
 def current() -> Settings:
@@ -171,6 +209,8 @@ def current() -> Settings:
         max_payload_bytes=MAX_PAYLOAD_BYTES,
         app_version=APP_VERSION,
         ingest_secret=INGEST_SECRET,
+        host=HOST,
+        port=PORT,
     )
 
 
@@ -188,5 +228,7 @@ INGEST_HEADER: str = DEFAULT_INGEST_HEADER
 MAX_PAYLOAD_BYTES: int = DEFAULT_MAX_PAYLOAD_BYTES
 APP_VERSION: str = __version__
 INGEST_SECRET: str | None = None
+HOST: str = DEFAULT_HOST
+PORT: int = DEFAULT_PORT
 
 apply(from_env())

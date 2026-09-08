@@ -32,6 +32,8 @@ class TestDefaults:
         assert s.max_payload_bytes == 67_108_864
         assert s.app_version == __version__
         assert s.ingest_secret is None
+        assert s.host == "0.0.0.0"
+        assert s.port == 8000
 
     def test_process_env_without_vars_yields_defaults(self, monkeypatch):
         for key in cfg.ENV_KEYS:
@@ -60,6 +62,8 @@ class TestEnvOverrides:
                 "INGEST_HEADER": "X-Custom-Token",
                 "MAX_PAYLOAD_BYTES": "1024",
                 "APP_VERSION": "9.9.9-test",
+                "HOST": "127.0.0.1",
+                "PORT": "45919",
             }
         )
         assert s.archive_root == Path("/tmp/custom-archive")
@@ -67,6 +71,8 @@ class TestEnvOverrides:
         assert s.ingest_header == "X-Custom-Token"
         assert s.max_payload_bytes == 1024
         assert s.app_version == "9.9.9-test"
+        assert s.host == "127.0.0.1"
+        assert s.port == 45919
 
     def test_monkeypatch_os_environ_is_respected(self, monkeypatch):
         monkeypatch.setenv("INGEST_SECRET", "monkey-value")
@@ -138,6 +144,29 @@ class TestValidation:
         s = from_env({"MAX_PAYLOAD_BYTES": "   "})
         assert s.max_payload_bytes == cfg.DEFAULT_MAX_PAYLOAD_BYTES
 
+    def test_invalid_port_falls_back_to_default_with_warning(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            s = from_env({"PORT": "not-a-port"})
+        assert s.port == cfg.DEFAULT_PORT
+        assert any("PORT" in str(w.message) for w in caught)
+
+    def test_out_of_range_port_falls_back_with_warning(self):
+        for bad in ("0", "65536", "-1"):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                s = from_env({"PORT": bad})
+            assert s.port == cfg.DEFAULT_PORT
+            assert any("1..65535" in str(w.message) for w in caught)
+
+    def test_blank_port_falls_back_to_default(self):
+        s = from_env({"PORT": "   "})
+        assert s.port == cfg.DEFAULT_PORT
+
+    def test_blank_host_falls_back_to_default(self):
+        s = from_env({"HOST": "   "})
+        assert s.host == cfg.DEFAULT_HOST
+
     def test_whitespace_ingest_secret_is_stripped(self):
         s = from_env({"INGEST_SECRET": "  s3cret-value  "})
         assert s.ingest_secret == "s3cret-value"
@@ -176,18 +205,24 @@ class TestApplyCurrentRoundTrip:
             max_payload_bytes=4096,
             app_version="0.0-test",
             ingest_secret="tmp-secret",
+            host="127.0.0.1",
+            port=45919,
         )
         monkeypatch.setattr(cfg, "ARCHIVE_ROOT", cfg.DEFAULT_ARCHIVE_ROOT)
         monkeypatch.setattr(cfg, "INGEST_HEADER", cfg.DEFAULT_INGEST_HEADER)
         monkeypatch.setattr(cfg, "MAX_PAYLOAD_BYTES", cfg.DEFAULT_MAX_PAYLOAD_BYTES)
         monkeypatch.setattr(cfg, "APP_VERSION", __version__)
         monkeypatch.setattr(cfg, "INGEST_SECRET", None)
+        monkeypatch.setattr(cfg, "HOST", cfg.DEFAULT_HOST)
+        monkeypatch.setattr(cfg, "PORT", cfg.DEFAULT_PORT)
         cfg.apply(settings)
         assert cfg.ARCHIVE_ROOT == Path("data/tmp-archive")
         assert cfg.INGEST_HEADER == "X-Tmp-Header"
         assert cfg.MAX_PAYLOAD_BYTES == 4096
         assert cfg.APP_VERSION == "0.0-test"
         assert cfg.INGEST_SECRET == "tmp-secret"
+        assert cfg.HOST == "127.0.0.1"
+        assert cfg.PORT == 45919
         assert cfg.current() == settings
 
     def test_current_reflects_live_attrs(self):

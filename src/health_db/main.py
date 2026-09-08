@@ -233,7 +233,7 @@ def serve() -> None:
     config.load()
     module = _factory_module()
     app_obj: Any = getattr(module, "app")
-    uvicorn.run(app_obj, host="0.0.0.0", port=8000)
+    uvicorn.run(app_obj, host=config.HOST, port=config.PORT)
 
 
 def main() -> None:
