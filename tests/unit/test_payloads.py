@@ -2,7 +2,13 @@
 
 Covers decomposition job slice-1-payloads acceptance: every documented
 data-point shape, unknown-metric acceptance, wrong-shape rejection,
-counting, data_type classification, and unknown_formats reporting.
+counting, data_type classification, unknown_formats reporting, plus the
+hardening fixes from the slice-1-payloads code-critic review:
+
+- invalid UTF-8 / NaN / Infinity / deep nesting / non-finite floats →
+  MalformedPayload (never RecursionError or inf leakage),
+- full-key-set shape recognition (partial overlap → unknown_formats),
+- data_type stays within the 'metrics' | 'workouts' contract enum.
 """
 
 from __future__ import annotations
@@ -12,6 +18,13 @@ import json
 import pytest
 
 from health_db.payloads import MalformedPayload, PayloadReport, parse
+
+
+def _recursion_limit() -> int:
+    import sys
+
+    return sys.getrecursionlimit()
+
 
 # ---------------------------------------------------------------------------
 # Body builders
@@ -70,8 +83,47 @@ class TestWrongShapeRejected:
             parse(b"{broken")
 
     def test_str_body_accepted_like_bytes(self):
-        report = parse('{"data": {"metrics": [], "workouts": []}}')
-        assert report.metrics == 0
+        report = parse('{"data": {"metrics": [{"qty": 1, "date": "d"}], "workouts": []}}')
+        assert report.metrics == 1
+
+    def test_invalid_utf8_body_raises(self):
+        with pytest.raises(MalformedPayload, match="not valid JSON"):
+            parse(b"\xff\xfe\x80bad-utf8")
+
+    def test_nan_literal_rejected(self):
+        with pytest.raises(MalformedPayload, match="not valid JSON"):
+            parse(b'{"data": {"metrics": [{"qty": NaN, "date": "d"}], "workouts": []}}')
+
+    def test_infinity_literal_rejected(self):
+        with pytest.raises(MalformedPayload, match="not valid JSON"):
+            parse(b'{"data": {"metrics": [{"qty": Infinity, "date": "d"}], "workouts": []}}')
+
+    def test_negative_infinity_literal_rejected(self):
+        with pytest.raises(MalformedPayload, match="not valid JSON"):
+            parse(b'{"data": {"metrics": [{"qty": -Infinity, "date": "d"}], "workouts": []}}')
+
+    def test_non_finite_float_overflow_rejected(self):
+        # 1e400 parses to inf; syntactically valid JSON, semantically rejected
+        with pytest.raises(MalformedPayload, match="not valid JSON"):
+            parse(b'{"data": {"metrics": [{"qty": 1e400, "date": "d"}], "workouts": []}}')
+
+    def test_deeply_nested_body_raises_malformed_not_recursionerror(self):
+        # 10x the interpreter's recursion limit guarantees RecursionError in
+        # json.loads; parse() must classify it as MalformedPayload (a ValueError).
+        depth = 10 * _recursion_limit()
+        body = b'{"data": ' * depth + b"{}" + b"}" * depth
+        with pytest.raises(MalformedPayload, match="nesting is too deep"):
+            parse(body)
+
+    def test_deeply_nested_str_body_raises_malformed(self):
+        depth = 10 * _recursion_limit()
+        body = "[" * depth + "]" * depth
+        with pytest.raises(MalformedPayload):
+            parse(body)
+
+    def test_empty_payload_rejected(self):
+        with pytest.raises(MalformedPayload, match="no metrics and no workouts"):
+            parse(wrap([], []))
 
 
 # ---------------------------------------------------------------------------
@@ -328,12 +380,86 @@ class TestUnknownFormatDetection:
 
 
 # ---------------------------------------------------------------------------
+# Full-key-set shape recognition: partial overlap → unknown_formats
+# ---------------------------------------------------------------------------
+
+
+class TestPartialKeyOverlapNotRecognized:
+    """{systolic} alone or {Avg} alone must NOT count as a recognized shape."""
+
+    def test_systolic_alone_is_unknown(self):
+        report = parse(wrap([metric("blood_pressure", [{"systolic": 118, "date": DATE}])]))
+        assert len(report.unknown_formats) == 1
+        assert "systolic" in report.unknown_formats[0]["reason"]
+
+    def test_diastolic_alone_is_unknown(self):
+        report = parse(wrap([metric("blood_pressure", [{"diastolic": 76, "date": DATE}])]))
+        assert len(report.unknown_formats) == 1
+
+    def test_avg_alone_is_unknown(self):
+        report = parse(wrap([metric("heart_rate", [{"Avg": 72, "date": DATE}])]))
+        assert len(report.unknown_formats) == 1
+        assert "Avg" in report.unknown_formats[0]["reason"]
+
+    def test_min_max_without_avg_is_unknown(self):
+        report = parse(wrap([metric("heart_rate", [{"Min": 60, "Max": 90, "date": DATE}])]))
+        assert len(report.unknown_formats) == 1
+
+    def test_sleep_aggregated_partial_keys_unknown(self):
+        report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08", "asleep": 7.0}])]))
+        assert len(report.unknown_formats) == 1
+
+    def test_qty_without_date_is_unknown(self):
+        report = parse(wrap([metric("step_count", [{"qty": 8500}])]))
+        assert len(report.unknown_formats) == 1
+
+    def test_partial_shapes_still_counted_and_accepted(self):
+        # Unknown shapes are reported, never rejected.
+        report = parse(
+            wrap([metric("broken_metric", [{"systolic": 118}, {"Avg": 72}, {"qty": 1}])])
+        )
+        assert report.metrics == 1
+        assert report.samples == 3
+        assert len(report.unknown_formats) == 1
+
+    def test_full_key_sets_still_recognized(self):
+        report = parse(
+            wrap(
+                [
+                    metric("blood_pressure", [{"systolic": 118, "diastolic": 76, "date": DATE}]),
+                    metric("heart_rate", [{"Min": 60, "Avg": 70, "Max": 90, "date": DATE}]),
+                    metric("sleep_analysis", [_sleep_aggregated_point()]),
+                    metric(
+                        "sleep_analysis_unagg",
+                        [{"startDate": "s", "endDate": "e", "qty": 1.5, "value": "Deep"}],
+                    ),
+                ]
+            )
+        )
+        assert report.unknown_formats == ()
+        assert report.samples == 4
+
+
+def _sleep_aggregated_point() -> dict:
+    return {
+        "date": "2026-09-08",
+        "totalSleep": 7.5,
+        "asleep": 7.0,
+        "core": 3.5,
+        "deep": 1.5,
+        "rem": 2.0,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Counting + data_type classification
 # ---------------------------------------------------------------------------
 
 
 class TestCountingAndClassification:
-    def test_mixed_payload_full_counts(self):
+    def test_both_non_empty_classifies_metrics(self):
+        # data_type contract is 'metrics' | 'workouts' only; metrics win when
+        # both arrays are non-empty (Batch Requests may split/combine exports).
         payload = {
             "data": {
                 "metrics": [
@@ -347,7 +473,7 @@ class TestCountingAndClassification:
         assert report.metrics == 2
         assert report.samples == 3
         assert report.workouts == 2
-        assert report.data_type == "mixed"
+        assert report.data_type == "metrics"
 
     def test_data_type_metrics(self):
         report = parse(wrap([metric("step_count", [{"qty": 1, "date": "d"}])], []))
@@ -357,12 +483,11 @@ class TestCountingAndClassification:
         report = parse(wrap([], [{"id": "A", "name": "Running"}]))
         assert report.data_type == "workouts"
 
-    def test_data_type_empty(self):
-        report = parse(wrap([], []))
-        assert report.data_type == "empty"
-        assert report.metrics == 0
-        assert report.samples == 0
-        assert report.workouts == 0
+    def test_data_type_only_allows_contract_enum(self):
+        report_m = parse(wrap([metric("x", [{"qty": 1, "date": "d"}])], []))
+        report_w = parse(wrap([], [{"id": "A", "name": "Walk"}]))
+        assert report_m.data_type in ("metrics", "workouts")
+        assert report_w.data_type in ("metrics", "workouts")
 
     def test_metrics_only_envelope_without_workouts_key(self):
         report = parse(json.dumps({"data": {"metrics": [metric("x", [])]}}).encode())
@@ -374,11 +499,14 @@ class TestCountingAndClassification:
         assert report.data_type == "workouts"
         assert report.metrics == 0
 
-    def test_empty_data_arrays_and_extra_envelope_keys_ignored(self):
+    def test_empty_data_arrays_rejected_as_malformed(self):
+        with pytest.raises(MalformedPayload):
+            parse(wrap([], []))
+
+    def test_empty_data_arrays_with_extra_envelope_keys_rejected(self):
         body = json.dumps({"data": {"metrics": [], "workouts": [], "something_new": [1]}}).encode()
-        report = parse(body)
-        assert report.data_type == "empty"
-        assert report.unknown_formats == ()
+        with pytest.raises(MalformedPayload):
+            parse(body)
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +516,7 @@ class TestCountingAndClassification:
 
 class TestContract:
     def test_report_is_frozen_dataclass(self):
-        report = parse(wrap([], []))
+        report = parse(wrap([], [{"id": "A", "name": "Walk"}]))
         assert isinstance(report, PayloadReport)
         with pytest.raises(Exception):
             report.metrics = 99  # type: ignore[misc]
@@ -402,3 +530,7 @@ class TestContract:
         first = parse(body)
         second = parse(body)
         assert first == second
+
+    def test_malformed_payload_is_valueerror(self):
+        # API layer catches ValueError-shaped MalformedPayload for 400 + quarantine.
+        assert issubclass(MalformedPayload, ValueError)

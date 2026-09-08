@@ -5,9 +5,17 @@ payloads into a :class:`PayloadReport` — counts and format classification
 only; slice 1 stores nothing (normalization/upsert lands in slice 2).
 
 Envelope (research/hae-json-v2-format.md): ``{"data": {"metrics": [...],
-"workouts": [...]}}``. A body that is not valid JSON or lacks the v2
-envelope raises :class:`MalformedPayload` (the API layer turns this into a
-400 + quarantine). Everything else is *reported*, never rejected:
+"workouts": [...]}}``. A body is rejected with :class:`MalformedPayload`
+(the API layer turns this into a 400 + quarantine) when it:
+
+- is not valid JSON — including invalid UTF-8 bytes, ``NaN``/``Infinity``
+  literals, non-finite numbers (e.g. ``1e400``), or nesting deeper than the
+  interpreter's recursion limit (``RecursionError`` is caught and classified);
+- lacks the ``{"data": {...}}`` envelope or has mistyped ``metrics`` /
+  ``workouts`` arrays;
+- carries neither metrics nor workouts (empty payload).
+
+Everything else is *reported*, never rejected:
 
 - Unknown metric **names** are always accepted (auto-registered in
   ``metric_dim`` in slice 2); slice 1 keeps no name registry.
@@ -15,17 +23,18 @@ envelope raises :class:`MalformedPayload` (the API layer turns this into a
   future HAE format change) while the payload is still accepted and counted.
 
 Recognized data-point shapes (shape-based, not name-based, so renamed or
-future metrics with a documented shape still parse):
+future metrics with a documented shape still parse). Recognition requires
+the FULL key set of a shape — partial key overlap (e.g. ``{systolic}``
+alone or ``{Avg}`` alone) does NOT count and is reported as unknown:
 
-- common: any point with a ``qty`` key — ``{qty, date, source?}`` (source
-  may be omitted on iOS 27+). Also covers sleep_analysis unaggregated
-  ``{startDate, endDate, qty, value}`` and qty-bearing variants
-  (blood_glucose + mealTime, insulin_delivery + reason, handwashing/toothbrushing
-  + value, sexual_activity).
-- heart_rate: ``{date, Min, Avg, Max}`` (no qty; Avg is the canonical value).
-- blood_pressure: ``{date, systolic, diastolic}`` (no qty).
-- sleep_analysis aggregated: day-level ``{date, totalSleep, asleep, core,
-  deep, rem, sleepStart, sleepEnd, inBed, ...}`` (no qty).
+- common: ``{qty, date, ...}`` (source/mealTime/reason/value extras allowed)
+  — also covers blood_glucose + mealTime, insulin_delivery + reason,
+  handwashing/toothbrushing + value, sexual_activity.
+- sleep_analysis unaggregated: ``{startDate, endDate, qty, value, ...}``.
+- heart_rate: ``{Min, Avg, Max, ...}`` (no qty; Avg is the canonical value).
+- blood_pressure: ``{systolic, diastolic, ...}`` (no qty).
+- sleep_analysis aggregated: ``{totalSleep, asleep, core, deep, rem, ...}``
+  (day-level, no qty).
 
 Counting semantics (receipt counts, per decomposition job slice-1-payloads):
 
@@ -34,11 +43,11 @@ Counting semantics (receipt counts, per decomposition job slice-1-payloads):
   (one point = one sample regardless of shape).
 - ``workouts`` = number of entries in ``data.workouts``.
 
-``data_type`` classification: metrics-only → ``"metrics"``; workouts-only →
-``"workouts"``; both non-empty (Batch Requests may split/combine exports) →
-``"mixed"``; both empty → ``"empty"``. The spec's ``raw_ingest.data_type``
-enum (``'metrics' | 'workouts'``) describes the per-automation norm; slice 2
-storage may normalize the mixed/empty cases when writing ``raw_ingest``.
+``data_type`` stays within the ``raw_ingest.data_type`` contract enum
+(``'metrics' | 'workouts'``): ``"metrics"`` whenever any metric groups are
+present (metrics take precedence when both arrays are non-empty), else
+``"workouts"``. Empty payloads are rejected as malformed, so ``"mixed"`` /
+``"empty"`` values never occur.
 
 This module performs no I/O and holds no state: every function is pure and
 safe to call concurrently.
@@ -47,28 +56,39 @@ safe to call concurrently.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
+from typing import Literal
 
-# Key sets for special-shape recognition (research/hae-json-v2-format.md).
+DataType = Literal["metrics", "workouts"]
+
+# FULL key sets for shape recognition (research/hae-json-v2-format.md). A
+# data point matches a shape only when every key of the set is present —
+# partial overlap ({systolic} alone, {Avg} alone, ...) is NOT recognition
+# and is reported in unknown_formats instead.
+_COMMON_KEYS = frozenset({"qty", "date"})
+_SLEEP_UNAGGREGATED_KEYS = frozenset({"qty", "value", "startDate", "endDate"})
 _BLOOD_PRESSURE_KEYS = frozenset({"systolic", "diastolic"})
 _HEART_RATE_KEYS = frozenset({"Min", "Avg", "Max"})
 _SLEEP_AGGREGATED_KEYS = frozenset({"totalSleep", "asleep", "core", "deep", "rem"})
 
 
 class MalformedPayload(ValueError):
-    """Payload is not valid JSON or lacks the HAE v2 ``{"data": {...}}`` envelope."""
+    """Payload is not valid JSON, lacks the HAE v2 ``{"data": {...}}`` envelope, or is empty."""
 
 
 @dataclass(frozen=True, slots=True)
 class PayloadReport:
     """Parse outcome for one HAE JSON v2 payload (report-only; nothing stored).
 
-    ``unknown_formats`` entries are JSON-ready dicts with ``name``/``units``/
-    ``reason`` keys describing metric groups or workouts that deviate from
-    the documented shapes. Anomalies never reject the payload.
+    ``data_type`` is always ``"metrics"`` or ``"workouts"`` (the
+    ``raw_ingest.data_type`` contract enum). ``unknown_formats`` entries are
+    JSON-ready dicts with ``name``/``units``/``reason`` keys describing
+    metric groups or workouts that deviate from the documented shapes.
+    Anomalies never reject the payload.
     """
 
-    data_type: str
+    data_type: DataType
     metrics: int
     samples: int
     workouts: int
@@ -76,16 +96,24 @@ class PayloadReport:
 
 
 def _point_shape(point: object) -> str | None:
-    """Shape name for one metric data point, or None when unrecognized."""
+    """Shape name for one metric data point, or None when unrecognized.
+
+    Recognition requires the FULL key set of a documented shape; a point
+    that only partially overlaps (e.g. ``{systolic}`` alone or ``{Avg}``
+    alone) is unrecognized and reported in ``unknown_formats``.
+    """
     if not isinstance(point, dict):
         return None
-    if "qty" in point:
+    keys = point.keys()
+    if _COMMON_KEYS <= keys:
         return "common"
-    if _BLOOD_PRESSURE_KEYS & point.keys():
+    if _SLEEP_UNAGGREGATED_KEYS <= keys:
+        return "sleep_analysis_unaggregated"
+    if _BLOOD_PRESSURE_KEYS <= keys:
         return "blood_pressure"
-    if _HEART_RATE_KEYS & point.keys():
+    if _HEART_RATE_KEYS <= keys:
         return "heart_rate"
-    if _SLEEP_AGGREGATED_KEYS & point.keys():
+    if _SLEEP_AGGREGATED_KEYS <= keys:
         return "sleep_analysis_aggregated"
     return None
 
@@ -132,14 +160,15 @@ def _inspect_workout(workout: object) -> dict[str, str] | None:
     return None
 
 
-def _classify_data_type(n_metric_groups: int, n_workouts: int) -> str:
-    if n_metric_groups and n_workouts:
-        return "mixed"
+def _classify_data_type(n_metric_groups: int, n_workouts: int) -> DataType:
+    """Contract enum only (``'metrics' | 'workouts'``); metrics take precedence.
+
+    Both arrays non-empty (not the per-automation norm, but tolerated) classifies
+    as ``"metrics"``; empty payloads never reach here (rejected as malformed).
+    """
     if n_metric_groups:
         return "metrics"
-    if n_workouts:
-        return "workouts"
-    return "empty"
+    return "workouts"
 
 
 def _parse_document(document: object) -> PayloadReport:
@@ -154,6 +183,8 @@ def _parse_document(document: object) -> PayloadReport:
         raise MalformedPayload("'data.metrics' must be an array")
     if not isinstance(workouts, list):
         raise MalformedPayload("'data.workouts' must be an array")
+    if not metrics and not workouts:
+        raise MalformedPayload("payload carries no metrics and no workouts (empty v2 envelope)")
 
     unknown: list[dict[str, str]] = []
     samples = 0
@@ -177,16 +208,39 @@ def _parse_document(document: object) -> PayloadReport:
     )
 
 
+def _reject_non_finite_constant(token: str) -> float:
+    """``json.loads`` parse_constant hook: NaN/Infinity literals are rejected."""
+    raise ValueError(f"non-finite number {token} is not allowed")
+
+
+def _parse_finite_float(token: str) -> float:
+    """``json.loads`` parse_float hook: reject floats outside the finite range.
+
+    Catches overflow literals such as ``1e400`` that parse to ``inf`` while
+    being syntactically valid JSON.
+    """
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite number {token} is not allowed")
+    return value
+
+
 def parse(body: bytes | str) -> PayloadReport:
     """Parse one HAE JSON v2 payload body into a :class:`PayloadReport`.
 
     Pure function: no filesystem, database, or network access. Raises
-    :class:`MalformedPayload` when ``body`` is not valid JSON or lacks the
-    ``{"data": {...}}`` envelope; all other anomalies are reported in
-    ``unknown_formats`` and never reject the payload.
+    :class:`MalformedPayload` when ``body`` is not valid JSON (invalid UTF-8,
+    ``NaN``/``Infinity``/non-finite numbers, recursion-limit-exceeding
+    nesting), lacks the ``{"data": {...}}`` envelope, or carries no metrics
+    and no workouts; all other anomalies are reported in ``unknown_formats``
+    and never reject the payload.
     """
     try:
-        document = json.loads(body)
-    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError subclass ValueError
+        document = json.loads(
+            body, parse_constant=_reject_non_finite_constant, parse_float=_parse_finite_float
+        )
+    except RecursionError as exc:
+        raise MalformedPayload("payload JSON nesting is too deep to parse") from exc
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, non-finite guards
         raise MalformedPayload(f"payload is not valid JSON: {exc}") from exc
     return _parse_document(document)
