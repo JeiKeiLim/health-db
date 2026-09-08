@@ -33,30 +33,34 @@ def make_metrics_payload(automation: str = "metrics-all") -> dict:
                     "name": "step_count",
                     "units": "count",
                     "data": [
-                        {"qty": 8500, "date": "2026-09-08 09:00:00 +0900",
-                         "source": "Apple Watch"},
-                        {"qty": 120, "date": "2026-09-08 10:00:00 +0900",
-                         "source": "Apple Watch"},
+                        {"qty": 8500, "date": "2026-09-08 09:00:00 +0900", "source": "Apple Watch"},
+                        {"qty": 120, "date": "2026-09-08 10:00:00 +0900", "source": "Apple Watch"},
                     ],
                 },
                 {  # heart_rate: Min/Avg/Max shape, no qty
                     "name": "heart_rate",
                     "units": "count/min",
                     "data": [
-                        {"date": "2026-09-08 09:00:00 +0900",
-                         "Min": 65, "Avg": 72, "Max": 85},
+                        {"date": "2026-09-08 09:00:00 +0900", "Min": 65, "Avg": 72, "Max": 85},
                     ],
                 },
                 {  # sleep_analysis aggregated shape, no qty
                     "name": "sleep_analysis",
                     "units": "hr",
                     "data": [
-                        {"date": "2026-09-08", "totalSleep": 7.5, "asleep": 7.0,
-                         "core": 3.5, "deep": 1.5, "rem": 2.0,
-                         "sleepStart": "2026-09-07 23:00:00 +0900",
-                         "sleepEnd": "2026-09-08 06:30:00 +0900",
-                         "inBed": 8.0, "inBedStart": "2026-09-07 22:45:00 +0900",
-                         "inBedEnd": "2026-09-08 06:45:00 +0900"},
+                        {
+                            "date": "2026-09-08",
+                            "totalSleep": 7.5,
+                            "asleep": 7.0,
+                            "core": 3.5,
+                            "deep": 1.5,
+                            "rem": 2.0,
+                            "sleepStart": "2026-09-07 23:00:00 +0900",
+                            "sleepEnd": "2026-09-08 06:30:00 +0900",
+                            "inBed": 8.0,
+                            "inBedStart": "2026-09-07 22:45:00 +0900",
+                            "inBedEnd": "2026-09-08 06:45:00 +0900",
+                        },
                     ],
                 },
             ],
@@ -77,13 +81,19 @@ def make_workout_payload() -> dict:
                     "end": "2026-09-08 07:47:00 +0900",
                     "duration": 2700,
                     "activeEnergy": 1420.8,  # kJ
-                    "heartRateData": [{"date": "2026-09-08 07:03:00 +0900",
-                                       "bpm": 128}],
-                    "route": [{"timestamp": "2026-09-08 07:03:00 +0900",
-                               "latitude": 37.33, "longitude": 127.01,
-                               "altitude": 10.0, "course": 180.0, "speed": 2.5,
-                               "horizontalAccuracy": 5.0,
-                               "verticalAccuracy": 8.0}],
+                    "heartRateData": [{"date": "2026-09-08 07:03:00 +0900", "bpm": 128}],
+                    "route": [
+                        {
+                            "timestamp": "2026-09-08 07:03:00 +0900",
+                            "latitude": 37.33,
+                            "longitude": 127.01,
+                            "altitude": 10.0,
+                            "course": 180.0,
+                            "speed": 2.5,
+                            "horizontalAccuracy": 5.0,
+                            "verticalAccuracy": 8.0,
+                        }
+                    ],
                 }
             ],
         }
@@ -111,6 +121,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
     monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
     from health_db.main import app
+
     return TestClient(app)
 
 
@@ -129,8 +140,8 @@ class TestAcceptsAndArchives:
         assert res.status_code == 200
         out = res.json()
         assert out["outcome"] == "stored"
-        assert out["metrics"] == 3          # 3 metric groups seen
-        assert out["samples"] == 4          # 2+1+1 data points
+        assert out["metrics"] == 3  # 3 metric groups seen
+        assert out["samples"] == 4  # 2+1+1 data points
         assert out["workouts"] == 0
         assert out["sha256"] == sha(b)
         assert out["archive_path"], "must report on-disk archive path"
@@ -180,26 +191,24 @@ class TestFailureSemantics:
         assert res.status_code == 401
 
     def test_wrong_token_401_and_audited_body_not_archived(self, client, tmp_path):
-        res = client.post("/api/ingest", content=body(make_metrics_payload()),
-                          headers={"X-Ingest-Token": "wrong"})
+        res = client.post(
+            "/api/ingest", content=body(make_metrics_payload()), headers={"X-Ingest-Token": "wrong"}
+        )
         assert res.status_code == 401
-        assert not list((tmp_path / "archive").rglob("*")), \
-            "untrusted body must NOT be archived"
+        assert not list((tmp_path / "archive").rglob("*")), "untrusted body must NOT be archived"
         # audit exists and carries no token material
         audit = client.get("/api/ingest/stats", headers=HDR).json()
         assert audit["unauthorized_attempts"] == 1
 
     def test_malformed_json_400_quarantined(self, client, tmp_path):
-        res = client.post("/api/ingest", content=b"{broken",
-                          headers=HDR)
+        res = client.post("/api/ingest", content=b"{broken", headers=HDR)
         assert res.status_code == 400
         assert res.json()["quarantine"]
         q = list((tmp_path / "archive" / "quarantine").rglob("*"))
         assert len(q) == 1, "malformed payload archived to quarantine/"
 
     def test_wrong_shape_400_quarantined(self, client):
-        res = client.post("/api/ingest", content=json.dumps({"nope": 1}).encode(),
-                          headers=HDR)
+        res = client.post("/api/ingest", content=json.dumps({"nope": 1}).encode(), headers=HDR)
         assert res.status_code == 400
 
     def test_duplicate_repost_idempotent_200(self, client):
@@ -215,6 +224,7 @@ class TestFailureSemantics:
 
     def test_oversized_413_not_archived(self, client, tmp_path, monkeypatch):
         import health_db.config as config
+
         monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 1024)
         big = b"x" * 2048
         res = client.post("/api/ingest", content=big, headers=HDR)
@@ -241,8 +251,9 @@ class TestArchiveFirstNeverLosesPayload:
 
 class TestNoSecretLeakage:
     def test_401_response_carries_no_secret(self, client):
-        res = client.post("/api/ingest", content=body(make_metrics_payload()),
-                          headers={"X-Ingest-Token": "wrong"})
+        res = client.post(
+            "/api/ingest", content=body(make_metrics_payload()), headers={"X-Ingest-Token": "wrong"}
+        )
         assert "test-secret-token" not in res.text
 
     def test_stats_carries_no_secret(self, client):
@@ -257,10 +268,18 @@ class TestNoSecretLeakage:
 
 class TestUnknownMetricAccepted:
     def test_unknown_metric_reported_as_accepted(self, client):
-        payload = {"data": {"metrics": [
-            {"name": "some_future_metric", "units": "count",
-             "data": [{"qty": 3, "date": "2026-09-08 09:00:00 +0900"}]},
-        ], "workouts": []}}
+        payload = {
+            "data": {
+                "metrics": [
+                    {
+                        "name": "some_future_metric",
+                        "units": "count",
+                        "data": [{"qty": 3, "date": "2026-09-08 09:00:00 +0900"}],
+                    },
+                ],
+                "workouts": [],
+            }
+        }
         res = client.post("/api/ingest", content=body(payload), headers=HDR)
         assert res.status_code == 200
         out = res.json()

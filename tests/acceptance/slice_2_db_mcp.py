@@ -11,8 +11,6 @@ DB-outage safety. Requires a disposable postgres container via
 INTEGRATION_TEST_DB (see harness.md iron law 7).
 """
 
-import json
-
 import pytest
 
 pytestmark = [pytest.mark.slice2, pytest.mark.requires_pg]
@@ -43,18 +41,19 @@ class TestIngestPersistsAndRollsUp:
         rolls = pg.rows(
             "SELECT sum_qty, sample_count FROM daily_rollups "
             "JOIN metric_dim USING (metric_id) "
-            "WHERE metric_dim.name = 'step_count'")
+            "WHERE metric_dim.name = 'step_count'"
+        )
         assert rolls and rolls[0]["sample_count"] == 2
         assert rolls[0]["sum_qty"] == pytest.approx(8500 + 120)
 
     def test_kst_midnight_boundary(self, pg, api):
         """23:59 KST and 00:01 KST next day must land in different days."""
-        api.post_metrics([("2026-09-08 23:59:00 +0900", 5.0),
-                          ("2026-09-09 00:01:00 +0900", 7.0)])
+        api.post_metrics([("2026-09-08 23:59:00 +0900", 5.0), ("2026-09-09 00:01:00 +0900", 7.0)])
         days = pg.rows(
             "SELECT day_kst, count(*) AS n FROM raw_samples "
             "JOIN metric_dim USING (metric_id) "
-            "WHERE metric_dim.name = 'step_count' GROUP BY day_kst ORDER BY day_kst")
+            "WHERE metric_dim.name = 'step_count' GROUP BY day_kst ORDER BY day_kst"
+        )
         assert [d["day_kst"].isoformat() for d in days] == ["2026-09-08", "2026-09-09"]
 
     def test_non_canonical_unit_skipped(self, pg, api):
@@ -68,32 +67,41 @@ class TestIngestPersistsAndRollsUp:
         assert qty == pytest.approx(100.0, rel=1e-6)
 
     def test_heart_rate_avg_is_qty(self, pg, api):
-        api.post_metric_raw("heart_rate", "count/min",
-                            {"date": "2026-09-08 09:00:00 +0900",
-                             "Min": 60, "Avg": 72, "Max": 90})
+        api.post_metric_raw(
+            "heart_rate",
+            "count/min",
+            {"date": "2026-09-08 09:00:00 +0900", "Min": 60, "Avg": 72, "Max": 90},
+        )
         qty = pg.scalar("SELECT qty FROM raw_samples")
         assert qty == 72
 
     def test_blood_pressure_split(self, pg, api):
-        api.post_metric_raw("blood_pressure", "mmHg",
-                            {"date": "2026-09-08 09:00:00 +0900",
-                             "systolic": 120, "diastolic": 80})
-        names = [r["name"] for r in pg.rows(
-            "SELECT metric_dim.name FROM raw_samples "
-            "JOIN metric_dim USING (metric_id) ORDER BY name")]
+        api.post_metric_raw(
+            "blood_pressure",
+            "mmHg",
+            {"date": "2026-09-08 09:00:00 +0900", "systolic": 120, "diastolic": 80},
+        )
+        names = [
+            r["name"]
+            for r in pg.rows(
+                "SELECT metric_dim.name FROM raw_samples "
+                "JOIN metric_dim USING (metric_id) ORDER BY name"
+            )
+        ]
         assert names == ["blood_pressure_diastolic", "blood_pressure_systolic"]
 
     def test_sleep_asleep_preference(self, pg, api):
-        api.post_metric_raw("sleep_analysis", "hr",
-                            {"date": "2026-09-08", "asleep": 7.0,
-                             "core": 3.5, "deep": 1.5, "rem": 2.0})
+        api.post_metric_raw(
+            "sleep_analysis",
+            "hr",
+            {"date": "2026-09-08", "asleep": 7.0, "core": 3.5, "deep": 1.5, "rem": 2.0},
+        )
         qty = pg.scalar("SELECT qty FROM raw_samples")
         assert qty == 7.0, "asleep wins when present (AutoSleep rule)"
 
     def test_unknown_metric_autoregisters(self, pg, api):
         api.post_metric(name="brand_new_metric", units="count", qty=1)
-        row = pg.row("SELECT name, canonical_unit FROM metric_dim "
-                     "WHERE name = 'brand_new_metric'")
+        row = pg.row("SELECT name, canonical_unit FROM metric_dim WHERE name = 'brand_new_metric'")
         assert row is not None
 
     def test_workout_with_hr_and_route(self, pg, api):
@@ -113,9 +121,7 @@ class TestIngestPersistsAndRollsUp:
 
     def test_monthly_partition_created(self, pg, api):
         api.post_valid_metrics()
-        n = pg.scalar(
-            "SELECT count(*) FROM pg_tables "
-            "WHERE tablename LIKE 'raw_samples_2026_%'")
+        n = pg.scalar("SELECT count(*) FROM pg_tables WHERE tablename LIKE 'raw_samples_2026_%'")
         assert n >= 1, "ingest must ensure current-month partition exists"
 
 
@@ -172,9 +178,9 @@ class TestMcpSurface:
     def test_query_day_and_series(self, mcp):
         day = mcp.call_tool("query_day", date="2026-09-08", metric="step_count")
         assert day["sum"] == 8500 + 120
-        series = mcp.call_tool("get_metric_series",
-                               metric="step_count",
-                               **{"from": "2026-09-01", "to": "2026-09-08"})
+        series = mcp.call_tool(
+            "get_metric_series", metric="step_count", **{"from": "2026-09-01", "to": "2026-09-08"}
+        )
         assert series["points"] >= 1
 
     def test_raw_samples_paginated(self, mcp):
@@ -183,8 +189,7 @@ class TestMcpSurface:
         assert page["next_offset"] == 1
 
     def test_workout_detail_with_hr_and_route(self, mcp):
-        detail = mcp.call_tool("get_workout_detail",
-                               id="CC8B17E2-9B4A-4C1D-8E2F-0A1B2C3D4E5F")
+        detail = mcp.call_tool("get_workout_detail", id="CC8B17E2-9B4A-4C1D-8E2F-0A1B2C3D4E5F")
         assert detail["hr"]
         assert detail["route"]
 
@@ -195,10 +200,9 @@ class TestMcpSurface:
         assert fresh["latest_complete_day"]
 
     def test_unknown_metric_error_is_actionable(self, mcp):
-        err = mcp.call_tool_expect_error("get_metric_series",
-                                         metric="nope_metric",
-                                         **{"from": "2026-09-01",
-                                            "to": "2026-09-08"})
+        err = mcp.call_tool_expect_error(
+            "get_metric_series", metric="nope_metric", **{"from": "2026-09-01", "to": "2026-09-08"}
+        )
         assert "list_metrics" in err or "health://metrics" in err
 
 
@@ -218,8 +222,17 @@ class TestBackfillReplayIdempotent:
 
 
 def make_replay_file() -> dict:
-    return {"data": {"metrics": [
-        {"name": "step_count", "units": "count",
-         "data": [{"qty": 100, "date": "2026-01-01 10:00:00 +0900",
-                   "source": "Apple Watch"}]},
-    ], "workouts": []}}
+    return {
+        "data": {
+            "metrics": [
+                {
+                    "name": "step_count",
+                    "units": "count",
+                    "data": [
+                        {"qty": 100, "date": "2026-01-01 10:00:00 +0900", "source": "Apple Watch"}
+                    ],
+                },
+            ],
+            "workouts": [],
+        }
+    }
