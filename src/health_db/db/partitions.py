@@ -112,8 +112,5 @@ def ensure_backfill_range(
             )
         )
         ensured.append(name)
-        if end > date(end.year, 12, 31):
-            month_cursor = date(end.year + 1, 1, 1)
-        else:
-            month_cursor = end
+        month_cursor = end
     return ensured

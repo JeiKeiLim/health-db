@@ -389,11 +389,31 @@ class TestEnsurePartitionsReal:
         assert migrated.scalar("SELECT count(*) FROM raw_samples") == 1
 
     def test_idempotent_second_call_noop(self, migrated):
-        from health_db.db import partitions as parts
+        from health_db.db.partitions import ensure_partitions
 
         with migrated.pool.connection() as conn:
-            first = ensure_partitions_twice_helper(conn, parts)
-        assert first == 2, "two partitions ensured on first call"
+            ensure_partitions(conn)
+        before = partition_names(migrated)
+
+        with migrated.pool.connection() as conn:
+            ensure_partitions(conn)
+        after = partition_names(migrated)
+
+        assert before, "ensure_partitions created the current/next month partitions"
+        assert after == before, "second call created or dropped no partitions"
+
+        # and a third call is still a no-op: the ensured partitions keep their
+        # identity (relfilenode), proving no drop/recreate happened
+        with migrated.pool.connection() as conn:
+            again = ensure_partitions(conn)
+        assert set(again) == set(before)
+        with migrated.pool.connection() as conn:
+            names = partition_names(migrated)
+            nodes_before = partition_relfilenodes(migrated)
+            ensure_partitions(conn)
+            nodes_after = partition_relfilenodes(migrated)
+        assert names == before
+        assert nodes_after == nodes_before
 
     def test_backfill_range_creates_historical_partitions(self, migrated):
         from health_db.db.partitions import ensure_backfill_range
@@ -417,11 +437,33 @@ class TestEnsurePartitionsReal:
         assert migrated.scalar("SELECT count(*) FROM raw_samples") == 2
 
 
-def ensure_partitions_twice_helper(conn, parts) -> int:
-    """Run ensure_partitions twice in one tx; count rows created vs no-op."""
-    parts.ensure_partitions(conn)
-    parts.ensure_partitions(conn)
-    return 2
+def partition_names(pg) -> list[str]:
+    """Actual raw_samples partitions from the PG catalogs (pg_inherits)."""
+    rows = pg.rows(
+        """
+        SELECT c.relname AS name
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = 'raw_samples'
+        ORDER BY c.relname
+        """
+    )
+    return [row["name"] for row in rows]
+
+
+def partition_relfilenodes(pg) -> dict[str, int]:
+    """Partition name → relfilenode (changes if a partition was recreated)."""
+    rows = pg.rows(
+        """
+        SELECT c.relname AS name, c.relfilenode AS node
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = 'raw_samples'
+        """
+    )
+    return {row["name"]: row["node"] for row in rows}
 
 
 # ---------------------------------------------------------------------------
