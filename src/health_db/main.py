@@ -73,7 +73,6 @@ import health_db.config as config
 import health_db.stats as stats
 from health_db.archive import ArchiveStore
 from health_db.auth import AUDIT_LOG, AuthError, require_token
-from health_db.db.pool import get_pool as _get_pool_seam
 from health_db.failures import (
     OversizedPayload,
     check_size,
@@ -87,26 +86,24 @@ from health_db.routes import router
 
 
 def _resolve_pool() -> object | None:
-    """Resolve the ingest pool: materialized singleton → env-configured
-    construction → None (archive-only mode).
+    """Resolve the ingest pool: env-configured pool → materialized singleton
+    → None (archive-only mode).
 
-    The DB pool is resolved through this module seam (monkeypatchable) so
-    importing this module never constructs a pool — slice-1-style
-    TestClient suites (no DB) keep working unchanged. The singleton is
-    consulted first so tests can point the pipeline at a container via
-    ``get_pool``/``reset_pool`` without ambient env. When no pool exists
-    and no ``PSQL_*`` key is set, ``None`` is returned and the route stays
-    in archive-only mode — the pipeline never builds a pool against
-    ambient defaults (parity with the health probe's gate).
+    The pool is resolved through the *live* ``db_pool.get_pool`` module
+    attribute (looked up at call time, never an import-time alias) so test
+    seams that replace ``health_db.db.pool.get_pool`` per test are honored
+    no matter when this module was first imported. When ``PSQL_*`` env is
+    configured the singleton builder is used (it memoizes, so production
+    still gets exactly one pool); with a bare env the materialized
+    singleton — if any — is returned; with neither, ``None`` is returned
+    and the route stays in archive-only mode. The pipeline never builds a
+    pool against ambient defaults (parity with the health probe's gate).
     """
     from health_db.db import pool as db_pool
 
-    materialized = db_pool.existing_pool()
-    if materialized is not None:
-        return materialized
     if db_pool.has_explicit_env():
-        return _get_pool_seam()
-    return None
+        return db_pool.get_pool()
+    return db_pool.existing_pool()
 
 
 # HAE automation headers surfaced to stats.last_automation (spec §API

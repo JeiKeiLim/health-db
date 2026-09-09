@@ -516,13 +516,17 @@ def api(pg, request, tmp_path_factory, monkeypatch):
     with pg.pool.connection() as conn:
         apply_all(conn)  # idempotent: fresh schema applies 0001, re-runs no-op
 
+    # Point the pool singleton AT the container pool itself (same instance,
+    # already carrying the ``options=-c search_path=<schema>`` kwargs): every
+    # consumer — the ingest route, the replay seam's ``existing_pool()``,
+    # ``check_cached`` — then resolves to the identical, correctly-scoped
+    # pool, with no post-construction kwarg mutation races. The seam patch
+    # below keeps later ``get_pool()`` callers on the same instance too.
+    db_pool._pool = pg.pool
+
     monkeypatch.setenv(db_pool.ENV_PSQL_URL, pg.host)
     monkeypatch.setenv(db_pool.ENV_PSQL_PORT, str(pg.port))
     monkeypatch.setattr(db_pool, "get_pool", lambda settings=None: pg.pool)
-
-    # Materialize the singleton so `existing_pool()` (the route's first
-    # resolution step and the replay seam) sees the container pool.
-    db_pool.get_pool()
 
     tmp_root = tmp_path_factory.mktemp(f"ingest-{abs(hash(request.node.nodeid)) & 0xFFFF:04x}")
     archive_root = tmp_root / "archive"

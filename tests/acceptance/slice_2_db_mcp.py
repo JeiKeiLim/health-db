@@ -166,7 +166,7 @@ class TestIngestPersistsAndRollsUp:
             SELECT count(*) FROM pg_inherits i
             JOIN pg_class c ON c.oid = i.inhrelid
             JOIN pg_class p ON p.oid = i.inhparent
-            WHERE p.relname = 'raw_samples' AND c.relname LIKE 'raw_samples_p2026_%'
+            WHERE p.relname = 'raw_samples' AND c.relname LIKE 'raw_samples_p2026_%%'
             """
         )
         assert n >= 1, "ingest must ensure current-month partition exists"
