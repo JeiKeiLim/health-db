@@ -61,6 +61,7 @@ the same pipeline.
 
 from __future__ import annotations
 
+import json
 import threading
 from types import ModuleType
 from typing import Any
@@ -72,6 +73,7 @@ import health_db.config as config
 import health_db.stats as stats
 from health_db.archive import ArchiveStore
 from health_db.auth import AUDIT_LOG, AuthError, require_token
+from health_db.db.pool import get_pool as _get_pool_seam
 from health_db.failures import (
     OversizedPayload,
     check_size,
@@ -79,7 +81,33 @@ from health_db.failures import (
     oversized_response,
 )
 from health_db.payloads import MalformedPayload, parse
+from health_db.pending import PendingStore
+from health_db.pipeline import ingest_payload
 from health_db.routes import router
+
+
+def _resolve_pool() -> object | None:
+    """Resolve the ingest pool: materialized singleton → env-configured
+    construction → None (archive-only mode).
+
+    The DB pool is resolved through this module seam (monkeypatchable) so
+    importing this module never constructs a pool — slice-1-style
+    TestClient suites (no DB) keep working unchanged. The singleton is
+    consulted first so tests can point the pipeline at a container via
+    ``get_pool``/``reset_pool`` without ambient env. When no pool exists
+    and no ``PSQL_*`` key is set, ``None`` is returned and the route stays
+    in archive-only mode — the pipeline never builds a pool against
+    ambient defaults (parity with the health probe's gate).
+    """
+    from health_db.db import pool as db_pool
+
+    materialized = db_pool.existing_pool()
+    if materialized is not None:
+        return materialized
+    if db_pool.has_explicit_env():
+        return _get_pool_seam()
+    return None
+
 
 # HAE automation headers surfaced to stats.last_automation (spec §API
 # Endpoints: automation-name/id/aggregation/period + session-id).
@@ -107,6 +135,15 @@ def _automation_label(request: Request) -> str | None:
     if not parts:
         return None
     return "; ".join(parts)
+
+
+def _ingest_headers(request: Request) -> dict[str, str | None]:
+    """HAE header values the pipeline stores into ``raw_ingest`` columns."""
+    return {
+        "automation-name": request.headers.get("automation-name"),
+        "automation-id": request.headers.get("automation-id"),
+        "session-id": request.headers.get("session-id"),
+    }
 
 
 def create_app() -> FastAPI:
@@ -164,9 +201,14 @@ def create_app() -> FastAPI:
         # with its error-note sidecar (<stem>.error.txt, spec failure
         # table) written alongside by the module's always-on behavior.
         try:
+            document = json.loads(body)
             report = parse(body)
-        except MalformedPayload as exc:
-            response, _ = handle_malformed(body, exc, store=store)
+        except (MalformedPayload, ValueError) as exc:
+            response, _ = handle_malformed(
+                body,
+                exc if isinstance(exc, MalformedPayload) else MalformedPayload(str(exc)),
+                store=store,
+            )
             app_state_stats.record_quarantined()
             return response
 
@@ -186,15 +228,81 @@ def create_app() -> FastAPI:
 
         # Archive verbatim BEFORE reporting success (iron law 2).
         path = store.store(body)
+
+        # Slice 2 store stage: normalize → upsert → rollup recompute in one
+        # transaction. The disk archive above is the outage safety net (iron
+        # law 2); a DB outage also queues the payload for replay before the
+        # 503 returns, so replay never depends on rescanning the corpus.
+        content_sha = store.sha256_of(body)
+        headers = _ingest_headers(request)
+        received_stamp = app_state_stats.last_received_at()
+        pool_obj = _resolve_pool()
+        if pool_obj is None:
+            # No DB configured (no PSQL_* env, no materialized pool):
+            # archive-only mode — slice-1 semantics, payload counts as
+            # stored (the archive IS the durability). /api/health reports
+            # db=false so the missing configuration is observable.
+            app_state_stats.record_stored()
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "outcome": "stored",
+                    "data_type": report.data_type,
+                    "metrics": report.metrics,
+                    "samples": report.samples,
+                    "workouts": report.workouts,
+                    "unknown_formats": list(report.unknown_formats),
+                    "archive_path": str(path),
+                    "sha256": content_sha,
+                },
+            )
+        try:
+            result = ingest_payload(
+                pool_obj,
+                document,
+                sha256=content_sha,
+                body=body,
+                headers=headers,
+            )
+        except Exception as exc:
+            from health_db.pipeline import DbUnavailable
+
+            if not isinstance(exc, DbUnavailable):
+                raise
+            # Outage: archive stays (already written), queue for replay,
+            # then 503 + Retry-After (spec failure table).
+            from datetime import datetime as _dt
+
+            PendingStore().store(
+                body,
+                sha256=content_sha,
+                received_at=_dt.fromisoformat(received_stamp) if received_stamp else None,
+                automation_name=headers["automation-name"],
+                automation_id=headers["automation-id"],
+                session_id=headers["session-id"],
+            )
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "300"},
+                content={"detail": "database unavailable; payload archived for replay"},
+            )
+
+        if result.outcome == "duplicate":
+            app_state_stats.record_duplicate()
+            return JSONResponse(
+                status_code=200,
+                content={"outcome": "duplicate", "sha256": content_sha},
+            )
+
         app_state_stats.record_stored()
         return JSONResponse(
             status_code=200,
             content={
                 "outcome": "stored",
                 "data_type": report.data_type,
-                "metrics": report.metrics,
-                "samples": report.samples,
-                "workouts": report.workouts,
+                "metrics": result.metrics,
+                "samples": result.samples,
+                "workouts": result.workouts,
                 "unknown_formats": list(report.unknown_formats),
                 "archive_path": str(path),
                 "sha256": content_sha,

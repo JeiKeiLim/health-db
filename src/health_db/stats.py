@@ -116,6 +116,11 @@ class Stats:
         with self._lock:
             self._unauthorized_attempts += 1
 
+    def last_received_at(self) -> str | None:
+        """ISO-8601 UTC stamp of the most recent received payload, or None."""
+        with self._lock:
+            return self._last_received_at.isoformat() if self._last_received_at else None
+
     # --- reads -------------------------------------------------------------
 
     def snapshot(self) -> dict[str, object]:

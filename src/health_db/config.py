@@ -41,6 +41,7 @@ from health_db import __version__
 
 # --- Env keys (documented in .env.example) ---
 ENV_ARCHIVE_ROOT = "ARCHIVE_ROOT"
+ENV_PENDING_DIR = "PENDING_DIR"
 ENV_INGEST_SECRET = "INGEST_SECRET"
 ENV_INGEST_HEADER = "INGEST_HEADER"
 ENV_MAX_PAYLOAD_BYTES = "MAX_PAYLOAD_BYTES"
@@ -50,6 +51,7 @@ ENV_PORT = "PORT"
 
 ENV_KEYS = (
     ENV_ARCHIVE_ROOT,
+    ENV_PENDING_DIR,
     ENV_INGEST_SECRET,
     ENV_INGEST_HEADER,
     ENV_MAX_PAYLOAD_BYTES,
@@ -60,6 +62,7 @@ ENV_KEYS = (
 
 # --- Defaults (spec §API Endpoints + decomposition job slice-1-config) ---
 DEFAULT_ARCHIVE_ROOT: Path = Path("data") / "archive"
+DEFAULT_PENDING_DIR: Path = Path("data") / "pending"
 DEFAULT_INGEST_HEADER = "X-Ingest-Token"
 DEFAULT_MAX_PAYLOAD_BYTES = 67_108_864  # 64 MiB
 DEFAULT_HOST = "0.0.0.0"
@@ -71,6 +74,7 @@ class Settings:
     """Immutable snapshot of ingest-service configuration."""
 
     archive_root: Path = DEFAULT_ARCHIVE_ROOT
+    pending_dir: Path = DEFAULT_PENDING_DIR
     ingest_header: str = DEFAULT_INGEST_HEADER
     max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES
     app_version: str = __version__
@@ -82,6 +86,7 @@ class Settings:
         """Secret-free snapshot dict, safe for logs/stats/error notes."""
         return {
             "archive_root": str(self.archive_root),
+            "pending_dir": str(self.pending_dir),
             "ingest_header": self.ingest_header,
             "max_payload_bytes": self.max_payload_bytes,
             "app_version": self.app_version,
@@ -164,11 +169,13 @@ def _port(environ: dict[str, str]) -> int:
 
 def _read_env(environ: dict[str, str]) -> Settings:
     archive_root = _stripped(environ, ENV_ARCHIVE_ROOT)
+    pending_dir = _stripped(environ, ENV_PENDING_DIR)
     header = _stripped(environ, ENV_INGEST_HEADER)
     app_version = _stripped(environ, ENV_APP_VERSION)
     host = _stripped(environ, ENV_HOST)
     return Settings(
         archive_root=Path(archive_root) if archive_root else DEFAULT_ARCHIVE_ROOT,
+        pending_dir=Path(pending_dir) if pending_dir else DEFAULT_PENDING_DIR,
         ingest_header=header or DEFAULT_INGEST_HEADER,
         max_payload_bytes=_max_payload_bytes(environ),
         app_version=app_version or __version__,
@@ -190,9 +197,10 @@ def from_env(environ: dict[str, str] | None = None) -> Settings:
 
 def apply(settings: Settings) -> None:
     """Publish a Settings snapshot onto the module-level live attributes."""
-    global ARCHIVE_ROOT, INGEST_HEADER, INGEST_SECRET, MAX_PAYLOAD_BYTES
+    global ARCHIVE_ROOT, PENDING_DIR, INGEST_HEADER, INGEST_SECRET, MAX_PAYLOAD_BYTES
     global APP_VERSION, HOST, PORT
     ARCHIVE_ROOT = settings.archive_root
+    PENDING_DIR = settings.pending_dir
     INGEST_HEADER = settings.ingest_header
     MAX_PAYLOAD_BYTES = settings.max_payload_bytes
     APP_VERSION = settings.app_version
@@ -205,6 +213,7 @@ def current() -> Settings:
     """Read the live module-level attributes back into a Settings snapshot."""
     return Settings(
         archive_root=ARCHIVE_ROOT,
+        pending_dir=PENDING_DIR,
         ingest_header=INGEST_HEADER,
         max_payload_bytes=MAX_PAYLOAD_BYTES,
         app_version=APP_VERSION,
@@ -224,6 +233,7 @@ def load() -> Settings:
 # Live attributes, initialized from the process environment at import.
 # Downstream modules read these; tests may monkeypatch them per-case.
 ARCHIVE_ROOT: Path = DEFAULT_ARCHIVE_ROOT
+PENDING_DIR: Path = DEFAULT_PENDING_DIR
 INGEST_HEADER: str = DEFAULT_INGEST_HEADER
 MAX_PAYLOAD_BYTES: int = DEFAULT_MAX_PAYLOAD_BYTES
 APP_VERSION: str = __version__
