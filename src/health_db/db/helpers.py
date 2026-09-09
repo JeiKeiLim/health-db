@@ -120,20 +120,22 @@ class _Ids:
         self._metrics: dict[str, int] = {}
         self._sources: dict[str, int] = {}
 
-    def metric_id(self, conn: object, name: str) -> int:
+    def metric_id(self, conn: object, name: str, declared_unit: str = "") -> int:
         found = self._metrics.get(name)
         if found is None:
             from health_db.normalize import canonical_unit_of, display_name, is_cumulative_unit
 
+            # Seed rule (spec §metric_dim): mapped metrics take their canonical
+            # unit; pass-through metrics seed from the declared HAE unit.
             unit = canonical_unit_of(name)
+            if unit is None:
+                unit = declared_unit
+                cumulative = is_cumulative_unit(declared_unit)
+            else:
+                cumulative = is_cumulative_unit(unit)
             row = conn.execute(
                 UPSERT_METRIC,
-                (
-                    name,
-                    display_name(name),
-                    unit if unit is not None else "",
-                    is_cumulative_unit(unit) if unit is not None else False,
-                ),
+                (name, display_name(name), unit, cumulative),
             ).fetchone()
             found = int(row[0])
             self._metrics[name] = found

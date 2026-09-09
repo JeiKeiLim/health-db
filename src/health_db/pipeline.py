@@ -232,17 +232,18 @@ def ingest_payload(
             from health_db.normalize import metric_rows
 
             rows = metric_rows(parsed)
-            if rows:
-                ids = _Ids()
-                for row in rows:
-                    ids.metric_id(conn, row.name)  # register dims before partition create
-                    ids.source_id(conn, row.source)
+            ids = _Ids()
+            for row in rows:
+                # register dims before partition create; declared unit
+                # seeds pass-through metric_dim rows (spec §metric_dim)
+                ids.metric_id(conn, row.name, declared_unit=row.unit)
+                ids.source_id(conn, row.source)
 
             days = _sample_days(rows)
             if days:
                 ensure_backfill_range(conn, first_day=min(days), last_day=max(days))
             ensure_partitions(conn)
-            stored = _upsert_samples(conn, ids if rows else _Ids(), rows)
+            stored = _upsert_samples(conn, ids, rows)
 
             _deleted, _inserted = recompute_rollups(conn, days)
 

@@ -309,7 +309,10 @@ class Api:
         Uses a stub pool whose ``connection()`` raises immediately — the
         same shape as a borrowed connection against a stopped postgres —
         so the route's except-path (503 + pending queue) is exercised
-        without a real second container.
+        without a real second container. The stub is installed by direct
+        attribute patch (no monkeypatch teardown) because subsequent
+        fixture calls on the SAME test (replay after outage) must be able
+        to restore the real pool explicitly.
         """
         from health_db.db import pool as db_pool
 
@@ -317,7 +320,18 @@ class Api:
             def connection(self, timeout=None):
                 raise RuntimeError("simulated DB outage (test stub)")
 
-        self._monkeypatch.setattr(db_pool, "existing_pool", lambda: _DownPool())
+        self._saved_get_pool = db_pool.get_pool
+        db_pool.get_pool = lambda settings=None: _DownPool()  # type: ignore[assignment]
+        self._pool_down = True
+
+    def _restore_pool(self) -> None:
+        """Undo a previous _seam_pool_down (no-op when never armed)."""
+        if not getattr(self, "_pool_down", False):
+            return
+        from health_db.db import pool as db_pool
+
+        db_pool.get_pool = self._saved_get_pool  # type: ignore[assignment]
+        self._pool_down = False
 
     def _maybe_json(self, res: object) -> object:
         """Return parsed JSON for 2xx responses (fixture convenience)."""
@@ -326,17 +340,20 @@ class Api:
     def post_valid_metrics(
         self, *, qty_override: float | None = None, db_down: bool = False, automation_name=None
     ) -> object:
-        if db_down:
-            self._seam_pool_down()
-        payload = make_metrics_payload()
-        if qty_override is not None:
-            payload["data"]["metrics"][0]["data"][0]["qty"] = qty_override
-        headers = dict(self._headers)
-        if automation_name:
-            headers["automation-name"] = automation_name
-        body_bytes = json.dumps(payload).encode("utf-8")
-        res = self._client.post("/api/ingest", content=body_bytes, headers=headers)
-        return self._maybe_json(res)
+        try:
+            if db_down:
+                self._seam_pool_down()
+            payload = make_metrics_payload()
+            if qty_override is not None:
+                payload["data"]["metrics"][0]["data"][0]["qty"] = qty_override
+            headers = dict(self._headers)
+            if automation_name:
+                headers["automation-name"] = automation_name
+            body_bytes = json.dumps(payload).encode("utf-8")
+            res = self._client.post("/api/ingest", content=body_bytes, headers=headers)
+            return self._maybe_json(res)
+        finally:
+            self._restore_pool()
 
     def post_metrics(self, points: list[tuple[str, float]]) -> object:
         """step_count samples from (date, qty) tuples (KST-boundary tests)."""
@@ -358,15 +375,20 @@ class Api:
         self, name: str, units: str, point: dict, *, db_down: bool = False
     ) -> object:
         """One metric group with a raw data point (special-shape tests)."""
-        payload = {
-            "data": {
-                "metrics": [{"name": name, "units": units, "data": [point]}],
-                "workouts": [],
+        try:
+            if db_down:
+                self._seam_pool_down()
+            payload = {
+                "data": {
+                    "metrics": [{"name": name, "units": units, "data": [point]}],
+                    "workouts": [],
+                }
             }
-        }
-        body_bytes = json.dumps(payload).encode("utf-8")
-        res = self._client.post("/api/ingest", content=body_bytes, headers=self._headers)
-        return self._maybe_json(res)
+            body_bytes = json.dumps(payload).encode("utf-8")
+            res = self._client.post("/api/ingest", content=body_bytes, headers=self._headers)
+            return self._maybe_json(res)
+        finally:
+            self._restore_pool()
 
     def post_valid_workout(self, *, db_down: bool = False) -> object:
         body_bytes = json.dumps(make_workout_payload()).encode("utf-8")
@@ -378,11 +400,16 @@ class Api:
 
         Returns the number of payloads processed. This is the seam the
         slice-2-replay job will wrap with the ``health-replay`` entry point.
+        Scans the route's own pending dir (``config.PENDING_DIR``-bound
+        ``self._pending``) — the same directory the 503 path writes to.
         """
-        from health_db.pending import PendingStore
         from health_db.pipeline import ingest_payload
 
-        pending = PendingStore()
+        pending = getattr(self, "_pending", None)
+        if pending is None:
+            from health_db.pending import PendingStore
+
+            pending = PendingStore()
         processed = 0
         for path, meta in pending.entries():
             body_bytes = path.read_bytes()
@@ -423,15 +450,32 @@ class Api:
 
     @property
     def _pool(self):
+        # The api fixture pins the singleton to the container pool via
+        # get_pool + materialization; _seam_pool_down restores it in its
+        # finally block, so by the time replay runs this resolves cleanly.
         from health_db.db import pool as db_pool
 
         found = db_pool.existing_pool()
+        if found is not None:
+            return found
+        assert getattr(self, "_pool_down", False) is False, (
+            "pool seam still down — _restore_pool must run before replay"
+        )
+        found = db_pool.get_pool()
         assert found is not None, "api fixture requires the pool singleton to be materialized"
         return found
 
 
 class Archive:
-    """Fixture wrapper over a PendingStore (outage queue assertions)."""
+    """Fixture wrapper over a PendingStore bound to the route's pending dir.
+
+    The route's 503 path writes via the live ``config.PENDING_DIR`` (a
+    fresh PendingStore() per request), so assertions must consult the SAME
+    directory — the wrapper therefore passes ``None`` and PendingStore
+    follows ``config.PENDING_DIR`` live. ``write_payload``/``root`` (the
+    replay-corpus seam) use that same root so ``replay_dir`` sees both
+    outage-queued and synthetic payloads under one tree.
+    """
 
     def __init__(self, pending) -> None:
         self._pending = pending
@@ -476,25 +520,36 @@ def api(pg, request, tmp_path_factory, monkeypatch):
     monkeypatch.setenv(db_pool.ENV_PSQL_PORT, str(pg.port))
     monkeypatch.setattr(db_pool, "get_pool", lambda settings=None: pg.pool)
 
+    # Materialize the singleton so `existing_pool()` (the route's first
+    # resolution step and the replay seam) sees the container pool.
+    db_pool.get_pool()
+
     tmp_root = tmp_path_factory.mktemp(f"ingest-{abs(hash(request.node.nodeid)) & 0xFFFF:04x}")
-    config.ARCHIVE_ROOT = tmp_root / "archive"
-    config.PENDING_DIR = tmp_root / "pending"
-    config.INGEST_SECRET = "test-secret-token"
-    config.INGEST_HEADER = "X-Ingest-Token"
-    config.MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
+    archive_root = tmp_root / "archive"
+    pending_root = tmp_root / "pending"
+    monkeypatch.setattr(config, "ARCHIVE_ROOT", archive_root)
+    monkeypatch.setattr(config, "PENDING_DIR", pending_root)
+    monkeypatch.setattr(config, "INGEST_SECRET", "test-secret-token")
+    monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
+    monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
 
     from health_db.main import app
+    from health_db.pending import PendingStore
 
     client = TestClient(app)
     handle = Api(client, {"X-Ingest-Token": "test-secret-token"}, monkeypatch)
+    handle._pending = PendingStore(root=pending_root)
     yield handle
     db_pool.reset_pool()
     db_pool.clear_check_cache()
 
 
 @pytest.fixture()
-def archive(tmp_path):
-    """PendingStore rooted in tmp_path — the outage-queue assertion surface."""
-    from health_db.pending import PendingStore
+def archive(api):
+    """PendingStore assertions bound to the SAME root the route writes to.
 
-    return Archive(PendingStore(root=tmp_path / "pending"))
+    Depends on ``api`` (not just ``pg``) so ``config.PENDING_DIR`` is the
+    tmp-isolated dir when the 503 path runs; the outage tests assert
+    ``archive.pending_count()`` against the route's own queue.
+    """
+    return Archive(api._pending)
