@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from datetime import date
-    from types import TracebackType
 
 # Unknown-metric/source auto-registration. is_cumulative is seeded from the
 # canonical unit (spec §metric_dim): True iff the unit is in CUMULATIVE_UNITS.
@@ -149,33 +148,20 @@ class _Ids:
         return found
 
 
-class _Recomputed:
+def recompute_rollups(conn: object, days: frozenset[date]) -> tuple[int, int]:
     """Day-scoped rollup recompute (predecessor ingester.py:237-253 parity).
 
     DELETE then re-INSERT every affected KST day inside the caller's
     transaction — the rollup always reflects the full raw_sample set for the
-    day after latest-wins corrections, never a partial increment.
+    day after latest-wins corrections, never a partial increment. Returns
+    ``(deleted, inserted)`` row counts.
     """
-
-    def __init__(self, conn: object, days: frozenset[date]) -> None:
-        self.conn = conn
-        self.days = days
-        self.deleted = 0
-        self.inserted = 0
-
-    def __enter__(self) -> _Recomputed:
-        if self.days:
-            self.deleted = self.conn.execute(DELETE_ROLLUPS, (sorted(self.days),)).rowcount
-            self.inserted = self.conn.execute(RECOMPUTE_ROLLUPS, (sorted(self.days),)).rowcount
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        return None
+    if not days:
+        return 0, 0
+    ordered = sorted(days)
+    deleted = conn.execute(DELETE_ROLLUPS, (ordered,)).rowcount
+    inserted = conn.execute(RECOMPUTE_ROLLUPS, (ordered,)).rowcount
+    return deleted, inserted
 
 
 def _parse_headers(headers: Mapping[str, str | None]) -> tuple[str | None, str | None, str | None]:

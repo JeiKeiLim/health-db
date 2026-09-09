@@ -17,6 +17,39 @@ pytestmark = [pytest.mark.slice2, pytest.mark.requires_pg]
 
 
 # ---------------------------------------------------------------------------
+# Per-test isolation on the shared container (same contract as slice_2_schema)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_data(pg):
+    """Empty all data tables + drop partitions before every test.
+
+    Runs BEFORE the api fixture (module-scope migrations already applied
+    by the container setup); each test starts from zero rows regardless
+    of file execution order.
+    """
+    from health_db.db.migrations import apply_all
+
+    with pg.pool.connection() as conn:
+        apply_all(conn)
+        conn.execute(
+            """
+            TRUNCATE metric_dim, source_dim, raw_samples, daily_rollups, workouts,
+                     workout_heart_rate, routes, raw_ingest, auth_log
+            """
+        )
+    for row in pg.rows(
+        """
+        SELECT c.relname AS name
+        FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+        WHERE i.inhparent = 'raw_samples'::regclass
+        """
+    ):
+        pg.execute(f'DROP TABLE IF EXISTS "{row["name"]}"')
+
+
+# ---------------------------------------------------------------------------
 # Scenario 1 (slice-2 part): hourly delta → upsert → rollup recompute
 # ---------------------------------------------------------------------------
 
@@ -94,7 +127,14 @@ class TestIngestPersistsAndRollsUp:
         api.post_metric_raw(
             "sleep_analysis",
             "hr",
-            {"date": "2026-09-08", "asleep": 7.0, "core": 3.5, "deep": 1.5, "rem": 2.0},
+            {
+                "date": "2026-09-08",
+                "totalSleep": 7.5,
+                "asleep": 7.0,
+                "core": 3.5,
+                "deep": 1.5,
+                "rem": 2.0,
+            },
         )
         qty = pg.scalar("SELECT qty FROM raw_samples")
         assert qty == 7.0, "asleep wins when present (AutoSleep rule)"
@@ -121,7 +161,14 @@ class TestIngestPersistsAndRollsUp:
 
     def test_monthly_partition_created(self, pg, api):
         api.post_valid_metrics()
-        n = pg.scalar("SELECT count(*) FROM pg_tables WHERE tablename LIKE 'raw_samples_2026_%'")
+        n = pg.scalar(
+            """
+            SELECT count(*) FROM pg_inherits i
+            JOIN pg_class c ON c.oid = i.inhrelid
+            JOIN pg_class p ON p.oid = i.inhparent
+            WHERE p.relname = 'raw_samples' AND c.relname LIKE 'raw_samples_p2026_%'
+            """
+        )
         assert n >= 1, "ingest must ensure current-month partition exists"
 
 

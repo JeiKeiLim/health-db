@@ -49,7 +49,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from health_db.db.helpers import _Ids, _parse_headers, _Recomputed
+from health_db.db.helpers import _Ids, _parse_headers, recompute_rollups
 from health_db.db.partitions import ensure_backfill_range, ensure_partitions
 from health_db.normalize import SampleRow, workout_rows
 
@@ -244,9 +244,7 @@ def ingest_payload(
             ensure_partitions(conn)
             stored = _upsert_samples(conn, ids if rows else _Ids(), rows)
 
-            recompute = _Recomputed(conn, days)
-            recompute.deleted  # noqa: B018 - force the DELETE+INSERT inside __enter__
-            recompute.inserted
+            _deleted, _inserted = recompute_rollups(conn, days)
 
             automation_name, automation_id, session_id = _parse_headers(headers or {})
             conn.execute(
