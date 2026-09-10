@@ -529,3 +529,196 @@ def archive(api):
     ``archive.pending_count()`` against the route's own queue.
     """
     return Archive(api._pending)
+
+
+# ---------------------------------------------------------------------------
+# mcp fixture: official SDK Client over a REAL streamable-http round-trip
+# (slice-2-mcp-server). The MCP Starlette app is served in-process on a
+# random localhost port by uvicorn's Server in a thread; the fixture wraps
+# the SDK Client with the call/read helpers the acceptance tests use.
+# ---------------------------------------------------------------------------
+
+
+class Mcp:
+    """Fixture wrapper performing REAL streamable-http round-trips.
+
+    Each call opens a fresh SDK ``Client`` (initialize handshake + call +
+    close) against the served /mcp endpoint — safe with the server's
+    stateless mode and immune to cross-loop anyio issues.
+    """
+
+    def __init__(self, url: str, token: str) -> None:
+        self._endpoint = url
+        self._token = token
+
+    async def _call(self, name: str, arguments: dict[str, object]) -> object:
+        import httpx2
+        from mcp import Client as SdkClient
+        from mcp.client.streamable_http import streamable_http_client
+
+        http = httpx2.AsyncClient(headers={"Authorization": f"Bearer {self._token}"})
+        transport = streamable_http_client(self._endpoint, http_client=http)
+        async with SdkClient(transport) as client:
+            return await client.call_tool(name, arguments)
+
+    async def _read(self, uri: str) -> object:
+        import httpx2
+        from mcp import Client as SdkClient
+        from mcp.client.streamable_http import streamable_http_client
+
+        http = httpx2.AsyncClient(headers={"Authorization": f"Bearer {self._token}"})
+        transport = streamable_http_client(self._endpoint, http_client=http)
+        async with SdkClient(transport) as client:
+            return await client.read_resource(uri)
+
+    async def _list(self) -> object:
+        import httpx2
+        from mcp import Client as SdkClient
+        from mcp.client.streamable_http import streamable_http_client
+
+        http = httpx2.AsyncClient(headers={"Authorization": f"Bearer {self._token}"})
+        transport = streamable_http_client(self._endpoint, http_client=http)
+        async with SdkClient(transport) as client:
+            return await client.list_tools()
+
+    def call_tool(self, name: str, **arguments: object) -> dict[str, object]:
+        """Call a tool through the served /mcp endpoint (authenticated).
+
+        The tool's structured content (JSON object) is returned. For
+        list-shaped results (query_day over all metrics, list_workouts,
+        list_metrics) a convenience single-metric view is NOT applied —
+        tests index the documented shape themselves. An ``is_error``
+        result raises RuntimeError with the tool's message.
+        """
+        result = _run_async(self._call(name, dict(arguments)))
+        if result.is_error:
+            text = result.content[0].text if result.content else "unknown tool error"
+            raise RuntimeError(f"tool {name} failed: {text}")
+        structured = result.structured_content
+        if isinstance(structured, dict):
+            return structured
+        if result.content:
+            return json.loads(result.content[0].text)
+        return {}
+
+    def call_tool_no_auth(self, name: str, **arguments: object) -> None:
+        """Call a tool WITHOUT the Bearer header — must fail (401 pre-auth).
+
+        The server answers 401 before MCP dispatch, so the SDK transport
+        surfaces a handshake/protocol failure; any exception satisfies the
+        acceptance contract.
+        """
+
+        async def one_shot() -> None:
+            import httpx2
+            from mcp import Client as SdkClient
+            from mcp.client.streamable_http import streamable_http_client
+
+            http = httpx2.AsyncClient()  # no Authorization header
+            transport = streamable_http_client(self._endpoint, http_client=http)
+            async with SdkClient(transport) as client:
+                await client.call_tool(name, dict(arguments))
+
+        _run_async(one_shot())
+
+    def call_tool_expect_error(self, name: str, **arguments: object) -> str:
+        """Call a tool expecting an actionable error; return the message text.
+
+        The error text must contain the tool's message verbatim (the
+        guarded tools deliver UnknownMetric/UnknownWorkout through
+        ToolError, so the text reaches the client in the content block).
+        """
+        result = _run_async(self._call(name, dict(arguments)))
+        assert result.is_error, f"expected tool {name} to fail"
+        return result.content[0].text if result.content else ""
+
+    def read_resource(self, uri: str) -> str:
+        """Read a resource through the served /mcp endpoint; return text."""
+        result = _run_async(self._read(uri))
+        texts = [c.text for c in result.contents if getattr(c, "text", None)]
+        assert texts, f"resource {uri} returned no text content"
+        return "\n".join(texts)
+
+    def list_tools(self) -> list[str]:
+        """Tool names from a real tools/list round-trip."""
+        result = _run_async(self._list())
+        return [tool.name for tool in result.tools]
+
+
+def _run_async(awaitable: object) -> object:
+    """Await one awaitable on a fresh event loop (sync bridge).
+
+    Each Mcp call opens its own SDK ``Client`` inside this loop (enter →
+    call → exit), so anyio's cancel scopes are created and destroyed on the
+    same loop — safe with the server's stateless (no session) mode.
+    """
+    import asyncio
+
+    return asyncio.run(awaitable)  # type: ignore[arg-type]
+
+
+def _serve_mcp_app(port: int):
+    """Serve the MCP ASGI app on 127.0.0.1:<port> in a daemon thread."""
+    import threading
+
+    import uvicorn
+
+    import health_db.mcp_server
+    from health_db.db import pool as db_pool
+
+    pool = db_pool.get_pool()  # materialized singleton → the container pool
+    app = health_db.mcp_server.mcp_asgi_app(pool)
+    config_obj = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="critical")
+    server = uvicorn.Server(config_obj)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 15.0
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not server.started:
+        raise RuntimeError("MCP test server did not start within 15s")
+    return server
+
+
+@pytest.fixture()
+def mcp(api, pg):
+    """SDK Client against a locally served streamable-http /mcp endpoint.
+
+    Depends on ``api`` (config isolation + seeded data helpers) and pins the
+    MCP app's pool seam to the same container pool the ingest route uses.
+    The server is a real uvicorn instance in a background thread — tool and
+    resource calls are genuine HTTP round-trips, not direct function calls.
+
+    Seeds a known corpus before yielding (the TestMcpSurface cases assert
+    against step_count values / the fixture workout UUID):
+    - the standard metrics payload (step_count ×2, heart_rate Avg-shape,
+      sleep_analysis aggregated → 4 samples, step_count day 2026-09-08,
+      sum 8620),
+    - the workout with heartRateData + route (id CC8B17E2-…).
+
+    Per-call event loops: the server runs ``stateless_http=True`` (fresh
+    transport per request, no session state), so the fixture does NOT keep
+    one SDK ``Client`` alive across tests/calls — every call opens a fresh
+    streamable-http transport (with the Bearer header), performs the
+    initialize handshake + the call, and exits. That keeps anyio's cancel
+    scopes on a single loop per call and still exercises the REAL HTTP
+    wire for every assertion.
+    """
+    import health_db.config as config
+
+    token = config.INGEST_SECRET or ""
+    assert token, "api fixture must configure INGEST_SECRET before mcp"
+
+    # Seed the catalog + a workout with HR/route via the REAL ingest route
+    # (TestClient), exactly what the phone does — no direct DB writes.
+    stored = api.post_valid_metrics()
+    assert stored["outcome"] == "stored", f"mcp fixture seed failed: {stored}"
+    workout = api.post_valid_workout()
+    assert workout["outcome"] == "stored", f"mcp fixture seed failed: {workout}"
+
+    port = _free_port()
+    _serve_mcp_app(port)
+    url = f"http://127.0.0.1:{port}/mcp"
+
+    handle = Mcp(url, token)
+    yield handle

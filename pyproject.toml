@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 health-db = "health_db.main:main"
+health-mcp = "health_db.mcp_server:main"
 health-migrate = "health_db.db.migrations:main"
 health-replay = "health_db.replay:main"
 
