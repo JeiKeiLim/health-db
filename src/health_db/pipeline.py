@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 
 OUTCOME_STORED = "stored"
 OUTCOME_DUPLICATE = "duplicate"
+OUTCOME_REPLAYED = "replayed"
 
 _RAW_INGEST_UNIQUE = "raw_ingest_sha256_key"
 
@@ -197,13 +198,18 @@ def ingest_payload(
     sha256: str,
     body: bytes,
     headers: Mapping[str, str | None] | None = None,
+    outcome: str = OUTCOME_STORED,
 ) -> IngestResult:
     """Store one parsed payload in a single all-or-nothing transaction.
 
     ``parsed`` is the decoded JSON document (the same object
     :func:`health_db.payloads.parse` produced). ``sha256`` / ``body`` feed
-    the ``raw_ingest`` archive row. Returns the response-contract outcome;
-    raises :class:`DbUnavailable` when the database cannot serve the write.
+    the ``raw_ingest`` archive row. ``outcome`` is the value recorded in
+    ``raw_ingest.outcome`` for a fresh store (the ingest route records
+    ``'stored'``; the replay tools record ``'replayed'`` so a backfill run
+    is distinguishable from live syncs in the raw_ingest audit). Returns
+    the response-contract outcome; raises :class:`DbUnavailable` when the
+    database cannot serve the write.
     """
     from health_db.db.helpers import INSERT_RAW_INGEST
 
@@ -257,7 +263,7 @@ def ingest_payload(
                     session_id,
                     "metrics" if metric_groups or not workout_entries else "workouts",
                     body.decode("utf-8"),
-                    OUTCOME_STORED,
+                    outcome,
                 ),
             )
 

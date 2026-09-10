@@ -398,55 +398,27 @@ class Api:
     def replay_pending(self) -> int:
         """Re-run the pipeline for every queued payload (outage recovery).
 
-        Returns the number of payloads processed. This is the seam the
-        slice-2-replay job will wrap with the ``health-replay`` entry point.
-        Scans the route's own pending dir (``config.PENDING_DIR``-bound
-        ``self._pending``) — the same directory the 503 path writes to.
+        Returns the number of payloads processed. Delegates to
+        :func:`health_db.replay.replay_pending` (the production seam wrapped
+        by the ``health-replay --pending`` entry point) with this fixture's
+        pending dir — the same directory the 503 path writes to.
         """
-        from health_db.pipeline import ingest_payload
+        from health_db import replay as replay_mod
 
-        pending = getattr(self, "_pending", None)
-        if pending is None:
-            from health_db.pending import PendingStore
-
-            pending = PendingStore()
-        processed = 0
-        for path, meta in pending.entries():
-            body_bytes = path.read_bytes()
-            sha256 = str(meta.get("sha256") or pending.sha256_of(body_bytes))
-            document = json.loads(body_bytes)
-            ingest_payload(
-                self._pool,
-                document,
-                sha256=sha256,
-                body=body_bytes,
-                headers={
-                    "automation-name": meta.get("automation_name"),
-                    "automation-id": meta.get("automation_id"),
-                    "session-id": meta.get("session_id"),
-                },
-            )
-            pending.drain(path)
-            processed += 1
-        return processed
+        report = replay_mod.replay_pending(self._pool, pending=self._pending)
+        return report.pending_drained
 
     def replay_dir(self, root) -> int:
-        """Re-run the pipeline over archived payload files (backfill seam)."""
-        from pathlib import Path as _Path
+        """Re-run the pipeline over archived payload files (backfill seam).
 
-        from health_db.pipeline import ingest_payload
+        Delegates to :func:`health_db.replay.replay_dir` (the production
+        seam behind ``health-replay --dir``), returning the number of
+        payloads whose store stage ran (first-applied or sha-deduped).
+        """
+        from health_db import replay as replay_mod
 
-        processed = 0
-        for path in sorted(_Path(root).rglob("*.json")):
-            parts = path.relative_to(root).parts
-            if "quarantine" in parts:
-                continue
-            body_bytes = path.read_bytes()
-            document = json.loads(body_bytes)
-            sha256 = __import__("hashlib").sha256(body_bytes).hexdigest()
-            ingest_payload(self._pool, document, sha256=sha256, body=body_bytes, headers={})
-            processed += 1
-        return processed
+        report = replay_mod.replay_dir(root, self._pool)
+        return report.seen
 
     @property
     def _pool(self):

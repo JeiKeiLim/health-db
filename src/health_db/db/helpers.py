@@ -112,6 +112,9 @@ INSERT INTO raw_ingest (sha256, received_at, automation_name, automation_id,
 VALUES (%s, now(), %s, %s, %s, %s, %s, %s)
 """.strip()
 
+# DB-side replay dedup: one round-trip per payload, before any reprocessing.
+SELECT_RAW_INGEST_SHA = "SELECT outcome FROM raw_ingest WHERE sha256 = %s"
+
 
 class _Ids:
     """Per-transaction cache of metric/source ids (dim lookups repeat)."""

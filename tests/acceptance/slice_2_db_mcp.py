@@ -11,6 +11,8 @@ DB-outage safety. Requires a disposable postgres container via
 INTEGRATION_TEST_DB (see harness.md iron law 7).
 """
 
+import json
+
 import pytest
 
 pytestmark = [pytest.mark.slice2, pytest.mark.requires_pg]
@@ -186,9 +188,33 @@ class TestDbOutageSafety:
 
     def test_replay_pending_after_db_returns(self, api, pg, archive):
         api.post_valid_metrics(db_down=True)
-        api.replay_pending()
+        drained = api.replay_pending()
+        assert drained == 1, "the outage-queued payload must be replayed exactly once"
+        assert pg.scalar("SELECT count(*) FROM raw_samples") == 4
+        assert archive.pending_count() == 0, "queue drains to zero after DB returns"
+        row = pg.row("SELECT outcome FROM raw_ingest")
+        assert row is not None and row["outcome"] == "replayed"
+
+    def test_replay_pending_twice_second_pass_drains_nothing(self, api, pg, archive):
+        api.post_valid_metrics(db_down=True)
+        assert api.replay_pending() == 1
+        # The queue is now empty; a second recovery pass is a no-op.
+        assert api.replay_pending() == 0
         assert pg.scalar("SELECT count(*) FROM raw_samples") == 4
         assert archive.pending_count() == 0
+
+    def test_replay_after_outage_recomputes_rollups(self, api, pg, archive):
+        """The recovered payload must be fully processed, not just upserted:
+        daily_rollups for its KST day are recomputed by the pipeline."""
+        api.post_valid_metrics(db_down=True)
+        api.replay_pending()
+        rolls = pg.rows(
+            "SELECT sum_qty, sample_count FROM daily_rollups "
+            "JOIN metric_dim USING (metric_id) "
+            "WHERE metric_dim.name = 'step_count'"
+        )
+        assert rolls and rolls[0]["sample_count"] == 2
+        assert rolls[0]["sum_qty"] == pytest.approx(8500 + 120)
 
 
 # ---------------------------------------------------------------------------
@@ -262,10 +288,52 @@ class TestBackfillReplayIdempotent:
     def test_replay_dir_twice_no_double_counts(self, api, pg, archive):
         archive.write_payload("2026", make_replay_file())
         api.replay_dir(archive.root)
-        before = pg.scalar("SELECT count(*) FROM raw_samples")
+        before_rows = pg.rows("SELECT metric_id, source_id, ts, qty FROM raw_samples ORDER BY ts")
+        assert len(before_rows) == 1, "first replay must land the payload"
         api.replay_dir(archive.root)
-        after = pg.scalar("SELECT count(*) FROM raw_samples")
-        assert before == after, "re-running a chunk must change nothing"
+        after_rows = pg.rows("SELECT metric_id, source_id, ts, qty FROM raw_samples ORDER BY ts")
+        assert after_rows == before_rows, "re-running a chunk must change nothing"
+
+    def test_replay_dir_records_replayed_outcome_and_dedups_by_sha(self, api, pg, archive):
+        archive.write_payload("2026", make_replay_file())
+        api.replay_dir(archive.root)
+        api.replay_dir(archive.root)
+        rows = pg.rows("SELECT outcome FROM raw_ingest")
+        assert len(rows) == 1, "sha256 dedup via raw_ingest: one row, never two applies"
+        assert rows[0]["outcome"] == "replayed"
+        assert pg.scalar("SELECT count(*) FROM daily_rollups") == 1
+
+    def test_replay_dir_applies_payload_content(self, api, pg, archive):
+        """Replay is not a black box: the archived payload's sample values
+        (step_count 100 on 2026-01-01) must actually land."""
+        archive.write_payload("2026", make_replay_file())
+        api.replay_dir(archive.root)
+        qty = pg.scalar(
+            "SELECT qty FROM raw_samples JOIN metric_dim USING (metric_id) "
+            "WHERE metric_dim.name = 'step_count'"
+        )
+        roll = pg.scalar("SELECT sum_qty FROM daily_rollups")
+        assert qty == pytest.approx(100.0)
+        assert roll == pytest.approx(100.0)
+
+    def test_replay_dir_skips_quarantine_subtree(self, api, pg, archive):
+        """Quarantined payloads were never accepted and must never be applied."""
+        quarantine_root = archive.root / "quarantine"
+        quarantine_root.mkdir(parents=True)
+        (quarantine_root / "bad.json").write_bytes(json.dumps(make_replay_file()).encode("utf-8"))
+        api.replay_dir(archive.root)
+        assert pg.scalar("SELECT count(*) FROM raw_samples") == 0
+        assert pg.scalar("SELECT count(*) FROM raw_ingest") == 0
+
+    def test_replay_dir_survives_malformed_payload_in_tree(self, api, pg, archive):
+        """One bad file must not abort a backfill: good payloads still land,
+        the bad file is left untouched on disk."""
+        archive.write_payload("2026", make_replay_file())
+        (archive.root / "2026" / "broken.json").write_bytes(b"{broken")
+        processed = api.replay_dir(archive.root)
+        assert processed == 2, "both files are seen; only the valid one applies"
+        assert pg.scalar("SELECT count(*) FROM raw_samples") == 1
+        assert (archive.root / "2026" / "broken.json").read_bytes() == b"{broken"
 
 
 def make_replay_file() -> dict:
