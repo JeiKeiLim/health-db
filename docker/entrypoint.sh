@@ -14,6 +14,6 @@ health-migrate || {
 # health CLI, ...) execs directly after migrations.
 if [ "${1:-serve}" = "serve" ]; then
     exec uvicorn health_db.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-8000}" &
-    exec uvicorn health_db.mcp_server:app --host "${MCP_HOST:-0.0.0.0}" --port "${MCP_PORT:-8100}"
+    exec uvicorn health_db.mcp_server:app --factory --host "${MCP_HOST:-0.0.0.0}" --port "${MCP_PORT:-8100}"
 fi
 exec "$@"

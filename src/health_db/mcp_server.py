@@ -422,3 +422,13 @@ def serve() -> None:
 def main() -> None:
     """Console-script alias — pyproject wires ``health-mcp`` here."""
     serve()
+
+
+def app() -> Starlette:
+    """Module-level ASGI app factory for ``uvicorn health_db.mcp_server:app --factory``.
+
+    Kept lazy (no import-time server build) so ``import health_db.mcp_server``
+    stays cheap and the module remains importable without a DB — the docker
+    entrypoint resolves this target.
+    """
+    return mcp_asgi_app()

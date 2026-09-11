@@ -41,7 +41,7 @@ uv run health metrics
 uv run health workouts --from 2026-09-01 --to 2026-09-10
 uv run health trends step_count --window 30
 uv run health freshness
-uv run health raw step_count --from 2026-09-01 --to 2026-09-10 --limit 1000
+uv run health raw --metric step_count --from 2026-09-01 --to 2026-09-10 --limit 1000
 uv run health routes <workout-id>
 ```
 JSON to stdout, diagnostics to stderr. Thin wrapper over the same query layer the MCP
