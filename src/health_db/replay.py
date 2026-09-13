@@ -11,7 +11,11 @@ two recovery paths of spec §Failure semantics:
   violate the failure semantics). Unknown-but-readable JSON files inside the
   tree are tolerated: they are counted as skipped with their error note,
   never crash the run, and are left untouched on disk (iron law: the archive
-  is never edited by replay).
+  is never edited by replay). ``force=True`` (``health-replay --force`` /
+  ``--repair``) additionally bypasses the ``raw_ingest.sha256`` dedup gate so
+  payloads written by an older buggy normalizer are re-normalized and their
+  workout rows repaired (latest-wins upserts make it idempotent; the archive
+  and the ``raw_ingest`` row count are both untouched).
 - :func:`replay_pending` — outage recovery: drain the pending queue the 503
   path fills (:class:`health_db.pending.PendingStore`). A payload pair is
   deleted ONLY after a successful pipeline commit (acceptance contract:
@@ -77,6 +81,7 @@ class ReplayReport:
 
     root: str
     mode: str  # "dir" | "pending"
+    force: bool = False
     seen: int = 0
     processed: int = 0
     duplicates: int = 0
@@ -90,6 +95,7 @@ class ReplayReport:
         return {
             "root": self.root,
             "mode": self.mode,
+            "force": self.force,
             "seen": self.seen,
             "processed": self.processed,
             "duplicates": self.duplicates,
@@ -128,6 +134,7 @@ def replay_dir(
     pool: object | None = None,
     *,
     ingest=None,
+    force: bool = False,
 ) -> ReplayReport:
     """Re-run the ingest pipeline over an archive tree (backfill).
 
@@ -137,6 +144,13 @@ def replay_dir(
     tests (default: :func:`pipeline.ingest_payload`). Every candidate file
     is classified seen/processed/duplicate/failed/skipped; the archive tree
     itself is never modified.
+
+    ``force`` selects the REPAIR path: instead of short-circuiting on the
+    ``raw_ingest.sha256`` UNIQUE gate, each archived payload is re-normalized
+    and re-upserted (latest-wins, so idempotent) so rows written by an older
+    buggy normalizer are rewritten with the corrected values. It still reads
+    from the archive on disk (server-safe) and never deletes ``raw_ingest`` rows;
+    the audit row is updated in place with outcome ``'repaired'``.
     """
     from health_db.db import pool as db_pool
 
@@ -153,7 +167,7 @@ def replay_dir(
 
     apply_ingest = ingest if ingest is not None else ingest_payload
     root_path = Path(root)
-    report = ReplayReport(root=str(root_path), mode="dir")
+    report = ReplayReport(root=str(root_path), mode="dir", force=force)
 
     for path in _payload_files(root_path):
         report.seen += 1
@@ -166,7 +180,15 @@ def replay_dir(
             continue
         sha = PendingStore.sha256_of(body)
         try:
-            apply_ingest(pool, document, sha256=sha, body=body, headers={}, outcome="replayed")
+            apply_ingest(
+                pool,
+                document,
+                sha256=sha,
+                body=body,
+                headers={},
+                outcome="replayed",
+                force=force,
+            )
         except Exception as exc:  # DbUnavailable + any SQL failure: retryable
             report.failed += 1
             report.errors.append(f"{path.name}: {type(exc).__name__}")
@@ -288,6 +310,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="drain the DB-outage pending queue instead of an archive dir",
     )
+    parser.add_argument(
+        "--force",
+        "--repair",
+        dest="force",
+        action="store_true",
+        help=(
+            "repair mode: re-normalize archived payloads even when their "
+            "raw_ingest sha256 already exists (latest-wins upserts; fixes rows "
+            "written by an older normalizer)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     config.load()
@@ -308,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             root = args.dir if args.dir is not None else Path(config.ARCHIVE_ROOT)
             _emit_progress(f"{CLI_PROG}: scanning {root}")
-            report = replay_dir(root, pool)
+            report = replay_dir(root, pool, force=args.force)
     except RuntimeError as exc:
         _emit_progress(f"{CLI_PROG}: {exc}")
         return 1
@@ -318,7 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     _emit_progress(
         f"{CLI_PROG}: done — seen={report.seen} processed={report.processed} "
         f"duplicates={report.duplicates} failed={report.failed} "
-        f"skipped={report.skipped} pending_drained={report.pending_drained}"
+        f"skipped={report.skipped} pending_drained={report.pending_drained} "
+        f"force={report.force}"
     )
     _emit_summary(report)
     return 0

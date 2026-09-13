@@ -63,6 +63,7 @@ if TYPE_CHECKING:
 OUTCOME_STORED = "stored"
 OUTCOME_DUPLICATE = "duplicate"
 OUTCOME_REPLAYED = "replayed"
+OUTCOME_REPAIRED = "repaired"
 
 _RAW_INGEST_UNIQUE = "raw_ingest_sha256_key"
 
@@ -134,10 +135,18 @@ def _upsert_workouts(
     parsed: object,
 ) -> int:
     """Workout upserts by UUID + HR + route rows (latest-wins re-sends)."""
+    from psycopg.types.json import Jsonb
+
     from health_db.db.helpers import UPSERT_HR, UPSERT_ROUTE, UPSERT_WORKOUT
 
     grouped = workout_rows(parsed)
     for row, hr_rows, route_rows in grouped:
+        # psycopg3 cannot adapt a plain dict/list to a jsonb parameter
+        # (ProgrammingError 'cannot adapt type dict'): wrap the parsed
+        # recovery object explicitly so a non-empty heartRateRecovery list
+        # stores as JSON instead of crashing the workout transaction. None
+        # stays SQL NULL.
+        recovery = Jsonb(row.heart_rate_recovery) if row.heart_rate_recovery is not None else None
         conn.execute(
             UPSERT_WORKOUT,
             (
@@ -163,7 +172,7 @@ def _upsert_workouts(
                 row.speed,
                 row.avg_heart_rate,
                 row.max_heart_rate,
-                row.heart_rate_recovery,
+                recovery,
             ),
         )
         if hr_rows:
@@ -199,6 +208,7 @@ def ingest_payload(
     body: bytes,
     headers: Mapping[str, str | None] | None = None,
     outcome: str = OUTCOME_STORED,
+    force: bool = False,
 ) -> IngestResult:
     """Store one parsed payload in a single all-or-nothing transaction.
 
@@ -210,15 +220,22 @@ def ingest_payload(
     is distinguishable from live syncs in the raw_ingest audit). Returns
     the response-contract outcome; raises :class:`DbUnavailable` when the
     database cannot serve the write.
+
+    ``force`` (repair path): reprocess a payload whose ``sha256`` already
+    exists in ``raw_ingest`` instead of short-circuiting to duplicate. The
+    normalization + latest-wins upserts are idempotent, so re-running repair
+    over an already-repaired payload rewrites the same values and the
+    ``raw_ingest`` audit row is updated in place (received_at preserved) with
+    outcome ``'repaired'`` — metrics/samples/rollups are untouched.
     """
-    from health_db.db.helpers import INSERT_RAW_INGEST
+    from health_db.db.helpers import INSERT_RAW_INGEST, UPSERT_RAW_INGEST
 
     try:
         with pool.connection(timeout=30.0) as conn:
             existing = conn.execute(
                 "SELECT outcome FROM raw_ingest WHERE sha256 = %s", (sha256,)
             ).fetchone()
-            if existing is not None:
+            if existing is not None and not force:
                 # Idempotent re-delivery (replay, restart): report duplicate
                 # without reprocessing (spec failure table: "no reprocessing").
                 return IngestResult(
@@ -254,8 +271,10 @@ def ingest_payload(
             _deleted, _inserted = recompute_rollups(conn, days)
 
             automation_name, automation_id, session_id = _parse_headers(headers or {})
+            recorded_outcome = OUTCOME_REPAIRED if (force and existing is not None) else outcome
+            statement = UPSERT_RAW_INGEST if force else INSERT_RAW_INGEST
             conn.execute(
-                INSERT_RAW_INGEST,
+                statement,
                 (
                     sha256,
                     automation_name,
@@ -263,12 +282,12 @@ def ingest_payload(
                     session_id,
                     "metrics" if metric_groups or not workout_entries else "workouts",
                     body.decode("utf-8"),
-                    outcome,
+                    recorded_outcome,
                 ),
             )
 
             return IngestResult(
-                outcome=OUTCOME_STORED,
+                outcome=recorded_outcome,
                 metrics=len(metric_groups),
                 samples=stored,
                 workouts=len(workout_entries),

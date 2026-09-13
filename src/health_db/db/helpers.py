@@ -112,6 +112,19 @@ INSERT INTO raw_ingest (sha256, received_at, automation_name, automation_id,
 VALUES (%s, now(), %s, %s, %s, %s, %s, %s)
 """.strip()
 
+# Repair-path counterpart: re-processing a sha that already has a raw_ingest
+# row must not violate the UNIQUE constraint, so the audit row is updated in
+# place (received_at preserved; payload/outcome refreshed).
+UPSERT_RAW_INGEST = """
+INSERT INTO raw_ingest (sha256, received_at, automation_name, automation_id,
+                        session_id, data_type, payload, outcome)
+VALUES (%s, now(), %s, %s, %s, %s, %s, %s)
+ON CONFLICT (sha256) DO UPDATE SET
+    payload = EXCLUDED.payload,
+    data_type = EXCLUDED.data_type,
+    outcome = EXCLUDED.outcome
+""".strip()
+
 # DB-side replay dedup: one round-trip per payload, before any reprocessing.
 SELECT_RAW_INGEST_SHA = "SELECT outcome FROM raw_ingest WHERE sha256 = %s"
 

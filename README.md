@@ -57,7 +57,13 @@ tools use.
   samples upsert latest-wins on `(metric_id, source_id, ts)`; workouts upsert by HAE
   UUID. Re-posting any chunk is always safe — row counts never change.
 - **Canonical units**: non-canonical-unit samples are skipped (never stored next to
-  canonical rows). The only conversion is kJ→kcal ÷ 4.184.
+  canonical rows). The only conversion is kJ→kcal ÷ 4.184. **All workout energies are
+  stored in kcal** (`active_energy_kcal`, `total_energy`, `basal_energy`): real HAE v2
+  payloads send `activeEnergyBurned`/`totalEnergy` as `{qty, units:'kJ'}` objects and
+  `activeEnergy`/`basalEnergy` as per-minute `kJ` point lists, which are summed then
+  converted. Distance (`distance_km`, `walking_running_distance_km`), HR, cadence,
+  speed, temperature, humidity and intensity are read from the real
+  `{qty, units}`/point-list shapes as well as the simplified fixture shapes.
 - **KST days**: `day_kst` is a stored generated column with fixed UTC+9 — rollup
   boundaries are KST calendar days, never server-local time.
 - **Rollups**: `daily_rollups` are recomputed per affected day inside the ingest
@@ -132,6 +138,23 @@ History is backfilled through the same ingest endpoint — no SQLite migration.
    (spec scenario 3).
 4. If the DB was down during a chunk, the payload sits in `data/pending/` (service
    answered 503); drain with `docker exec health-db health-replay --pending`.
+
+### Repairing rows written by an older normalizer
+
+`health-replay --dir` short-circuits on `raw_ingest.sha256` (duplicate), so it cannot
+re-normalize payloads already in the DB. To repair rows written by a buggy/older
+normalizer, run the force/repair path against the archive on disk:
+
+```sh
+uv run health-replay --dir data/archive --force     # --repair is an alias
+```
+
+This re-normalizes every archived payload even when its sha already exists and
+re-upserts with latest-wins semantics, so **workout/HR/route columns are rewritten
+with corrected values while `raw_samples` and `daily_rollups` are unchanged**. It is
+idempotent — running it twice changes nothing the second time — and never deletes
+`raw_ingest` rows (the audit row is updated in place with `outcome='repaired'`). It
+reads only from the on-disk archive, so it is safe on the host.
 
 ## Post-deploy validation (post-deploy procedure)
 

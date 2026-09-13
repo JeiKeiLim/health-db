@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -295,6 +296,17 @@ def make_workout_payload() -> dict:
     }
 
 
+# Sanitized copy of a real HAE v2 archived workout (tests/fixtures/). Keeps the
+# exact real shapes: {qty,units} dicts, per-minute point lists, Avg HR entries,
+# a heartRateRecovery list, and a few route points — trimmed and anonymized.
+FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
+
+
+def real_workout_payload() -> dict:
+    """Load the sanitized real-workout fixture (see tests/fixtures/)."""
+    return json.loads((FIXTURES_DIR / "workout_v2_sample.json").read_text(encoding="utf-8"))
+
+
 class Api:
     """Fixture wrapper over the TestClient for the ingest pipeline tests."""
 
@@ -395,6 +407,51 @@ class Api:
         res = self._client.post("/api/ingest", content=body_bytes, headers=self._headers)
         return self._maybe_json(res)
 
+    def post_real_workout(self) -> object:
+        """POST the sanitized REAL-shape workout fixture (regression guard).
+
+        This is the payload that the pre-fix normalizer stored as all-NULL
+        scalars with zero HR rows; the real-shape acceptance test asserts it
+        now lands fully populated.
+        """
+        body_bytes = json.dumps(real_workout_payload()).encode("utf-8")
+        res = self._client.post("/api/ingest", content=body_bytes, headers=self._headers)
+        return self._maybe_json(res)
+
+    def real_workout_payload(self) -> dict:
+        """The sanitized real-shape payload (for writing into a replay archive)."""
+        return real_workout_payload()
+
+    def post_workout_recovery(self, recovery: object) -> object:
+        """POST a workout carrying a non-empty ``heartRateRecovery`` value.
+
+        Regression guard for the latent psycopg jsonb-adaptation bug: a plain
+        dict/list handed to a ``%s`` jsonb parameter raised
+        ``ProgrammingError: cannot adapt type dict`` and crashed the workout
+        transaction once recovery was parsed.
+        """
+        payload = make_workout_payload()
+        payload["data"]["workouts"][0]["heartRateRecovery"] = recovery
+        body_bytes = json.dumps(payload).encode("utf-8")
+        res = self._client.post("/api/ingest", content=body_bytes, headers=self._headers)
+        return self._maybe_json(res)
+
+    def replay_dir(self, root, *, force: bool = False) -> int:
+        """Re-run the pipeline over archived payload files (backfill seam).
+
+        Delegates to :func:`health_db.replay.replay_dir` (the production
+        seam behind ``health-replay --dir``), returning the number of
+        payloads seen. ``force=True`` selects the repair path.
+        """
+        from health_db import replay as replay_mod
+
+        report = replay_mod.replay_dir(root, self._pool, force=force)
+        return report.seen
+
+    def repair_dir(self, root) -> int:
+        """Force-reprocess every archived payload (``health-replay --force``)."""
+        return self.replay_dir(root, force=True)
+
     def replay_pending(self) -> int:
         """Re-run the pipeline for every queued payload (outage recovery).
 
@@ -407,18 +464,6 @@ class Api:
 
         report = replay_mod.replay_pending(self._pool, pending=self._pending)
         return report.pending_drained
-
-    def replay_dir(self, root) -> int:
-        """Re-run the pipeline over archived payload files (backfill seam).
-
-        Delegates to :func:`health_db.replay.replay_dir` (the production
-        seam behind ``health-replay --dir``), returning the number of
-        payloads whose store stage ran (first-applied or sha-deduped).
-        """
-        from health_db import replay as replay_mod
-
-        report = replay_mod.replay_dir(root, self._pool)
-        return report.seen
 
     @property
     def _pool(self):

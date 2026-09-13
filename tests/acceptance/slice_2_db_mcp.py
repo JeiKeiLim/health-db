@@ -351,3 +351,217 @@ def make_replay_file() -> dict:
             "workouts": [],
         }
     }
+
+
+# ---------------------------------------------------------------------------
+# Real HAE v2 workout shapes — the regression guard for the original bug.
+#
+# The pre-fix normalizer stored every scalar workout field as NULL and zero
+# HR rows because it only understood the simplified fixture shapes; this test
+# POSTs the sanitized real-shape fixture through the REAL ingest route and
+# asserts the full observable outcome via DB queries.
+# ---------------------------------------------------------------------------
+
+
+class TestRealWorkoutShapesEndToEnd:
+    FIXTURE_ID = "a1b2c3d4-0001-1111-2222-333344445555"
+    FIXTURE_STEPS = 170.0 + 171.0 + 172.0
+    FIXTURE_WRD = 0.15 + 0.16 + 0.14
+    FIXTURE_BASAL_KJ = 5.0 + 6.0 + 7.0
+
+    def test_scalars_fully_populated(self, pg, api):
+        api.post_real_workout()
+        w = pg.row("SELECT * FROM workouts WHERE id = %s", (self.FIXTURE_ID,))
+        from health_db.normalize import KJ_PER_KCAL
+
+        assert w is not None, "real-shape workout row must exist"
+        assert w["active_energy_kcal"] == pytest.approx(2100.0 / KJ_PER_KCAL)
+        assert w["total_energy"] == pytest.approx(2400.0 / KJ_PER_KCAL)
+        assert w["basal_energy"] == pytest.approx(self.FIXTURE_BASAL_KJ / KJ_PER_KCAL)
+        assert w["distance_km"] == pytest.approx(6.5)
+        assert w["avg_heart_rate"] == pytest.approx(150.0)
+        assert w["max_heart_rate"] == 180
+        assert w["step_count"] == int(self.FIXTURE_STEPS)
+        assert w["walking_running_distance_km"] == pytest.approx(self.FIXTURE_WRD)
+        for column in (
+            "temperature",
+            "humidity",
+            "intensity",
+            "speed",
+            "step_cadence",
+        ):
+            assert w[column] is not None, f"{column} must be non-null for the real payload"
+
+    def test_all_required_columns_non_null(self, pg, api):
+        api.post_real_workout()
+        w = pg.row(
+            "SELECT active_energy_kcal, total_energy, basal_energy, distance_km, "
+            "avg_heart_rate, max_heart_rate, step_count, walking_running_distance_km, "
+            "temperature, humidity, intensity, speed, step_cadence "
+            "FROM workouts WHERE id = %s",
+            (self.FIXTURE_ID,),
+        )
+        missing = [k for k, v in w.items() if v is None]
+        assert missing == [], f"real payload left these NULL: {missing}"
+
+    def test_heart_rate_rows_match_fixture(self, pg, api):
+        api.post_real_workout()
+        rows = pg.rows(
+            "SELECT heart_rate, ts FROM workout_heart_rate "
+            "WHERE workout_id = %s ORDER BY ts",
+            (self.FIXTURE_ID,),
+        )
+        assert len(rows) == 5, "real heartRateData has 5 points"
+        assert rows[0]["heart_rate"] == 105  # round(105)
+        assert rows[1]["heart_rate"] == 114  # round(114)
+        assert rows[2]["heart_rate"] == 133  # round(132.75)
+
+    def test_recovery_jsonb_round_trips_as_array(self, pg, api):
+        api.post_real_workout()
+        recovery = pg.scalar(
+            "SELECT heart_rate_recovery FROM workouts WHERE id = %s", (self.FIXTURE_ID,)
+        )
+        assert isinstance(recovery, list), f"expected JSON array, got {type(recovery)}"
+        assert recovery[0]["Avg"] == 165
+        assert len(recovery) == 5
+
+    def test_route_rows_match_fixture(self, pg, api):
+        api.post_real_workout()
+        n = pg.scalar(
+            "SELECT count(*) FROM routes WHERE workout_id = %s", (self.FIXTURE_ID,)
+        )
+        assert n == 5
+        first = pg.row(
+            "SELECT latitude, longitude FROM routes WHERE workout_id = %s ORDER BY ts LIMIT 1",
+            (self.FIXTURE_ID,),
+        )
+        assert first["latitude"] == pytest.approx(REDACTED4466209698)
+
+
+class TestHeartRateRecoveryJsonbWrite:
+    """Regression: a parsed dict/list must not crash the jsonb workout write.
+
+    psycopg3 3.3.5 cannot adapt a plain dict/list to a ``%s`` jsonb parameter
+    (ProgrammingError 'cannot adapt type dict'); the pre-fix pipeline passed
+    ``row.heart_rate_recovery`` straight through and the workout transaction
+    died as soon as recovery was non-None.
+    """
+
+    def test_non_empty_recovery_list_stores(self, pg, api):
+        recovery = [
+            {"date": "2026-09-08 07:03:00 +0900", "Avg": 170, "Min": 170, "Max": 170},
+            {"date": "2026-09-08 07:04:00 +0900", "Avg": 165, "Min": 165, "Max": 165},
+        ]
+        res = api.post_workout_recovery(recovery)
+        assert res["outcome"] == "stored", res
+        stored = pg.scalar(
+            "SELECT heart_rate_recovery FROM workouts WHERE id = %s",
+            ("CC8B17E2-9B4A-4C1D-8E2F-0A1B2C3D4E5F",),
+        )
+        assert stored == recovery
+
+    def test_legacy_dict_recovery_stores(self, pg, api):
+        recovery = {"heartRateRecoveryValue": 25}
+        res = api.post_workout_recovery(recovery)
+        assert res["outcome"] == "stored", res
+        stored = pg.scalar(
+            "SELECT heart_rate_recovery FROM workouts WHERE id = %s",
+            ("CC8B17E2-9B4A-4C1D-8E2F-0A1B2C3D4E5F",),
+        )
+        assert stored == recovery
+
+
+class TestWorkoutRepairPath:
+    """Repair path: force-replay archived payloads to fix already-broken rows.
+
+    Requirements: (a) re-running repair is idempotent; (b) raw_samples and
+    daily_rollups are unchanged; (c) it works from the archive on disk.
+    """
+
+    def _snapshot_counts(self, pg) -> dict:
+        return {
+            "raw_samples": pg.scalar("SELECT count(*) FROM raw_samples"),
+            "daily_rollups": pg.scalar("SELECT count(*) FROM daily_rollups"),
+            "raw_ingest": pg.scalar("SELECT count(*) FROM raw_ingest"),
+        }
+
+    def test_repair_fixes_nulled_scalars_and_is_idempotent(self, pg, api, archive):
+        # 1. Ingest the real fixture (correct values).
+        api.post_real_workout()
+        good = pg.row(
+            "SELECT * FROM workouts WHERE id = %s",
+            (TestRealWorkoutShapesEndToEnd.FIXTURE_ID,),
+        )
+        assert good["active_energy_kcal"] > 0
+
+        # 2. Simulate the historical damage: NULL the scalar columns + drop HR rows.
+        pg.execute(
+            "UPDATE workouts SET active_energy_kcal = NULL, total_energy = NULL, "
+            "basal_energy = NULL, distance_km = NULL, avg_heart_rate = NULL, "
+            "max_heart_rate = NULL, step_count = NULL, "
+            "walking_running_distance_km = NULL, temperature = NULL, humidity = NULL, "
+            "intensity = NULL, speed = NULL, step_cadence = NULL, "
+            "heart_rate_recovery = NULL WHERE id = %s",
+            (TestRealWorkoutShapesEndToEnd.FIXTURE_ID,),
+        )
+        pg.execute(
+            "DELETE FROM workout_heart_rate WHERE workout_id = %s",
+            (TestRealWorkoutShapesEndToEnd.FIXTURE_ID,),
+        )
+        broken = pg.row("SELECT active_energy_kcal FROM workouts WHERE id = %s",
+                        (TestRealWorkoutShapesEndToEnd.FIXTURE_ID,))
+        assert broken["active_energy_kcal"] is None
+        assert pg.scalar("SELECT count(*) FROM workout_heart_rate") == 0
+
+        # 3. Repair from the archive on disk (sha already in raw_ingest → needs force).
+        archive.write_payload("2026", api.real_workout_payload())
+        seen = api.repair_dir(archive.root)
+        assert seen == 1
+
+        fixed = pg.row("SELECT * FROM workouts WHERE id = %s",
+                       (TestRealWorkoutShapesEndToEnd.FIXTURE_ID,))
+        assert fixed["active_energy_kcal"] > 0
+        assert fixed["total_energy"] > 0
+        assert fixed["basal_energy"] > 0
+        assert fixed["distance_km"] > 0
+        assert fixed["avg_heart_rate"] > 0
+        assert fixed["max_heart_rate"] > 0
+        assert fixed["step_count"] > 0
+        assert fixed["walking_running_distance_km"] > 0
+        assert fixed["heart_rate_recovery"] is not None
+        assert pg.scalar("SELECT count(*) FROM workout_heart_rate") == 5
+
+        # 4. Idempotency: a second repair changes no counters/values.
+        #   (ingested_at is a now() audit stamp that legitimately advances.)
+        before = self._snapshot_counts(pg)
+        columns = ", ".join(
+            c
+            for c in pg.row("SELECT * FROM workouts LIMIT 1").keys()
+            if c != "ingested_at"
+        )
+        fixed_before = pg.rows(f"SELECT {columns} FROM workouts ORDER BY id")
+        api.repair_dir(archive.root)
+        assert self._snapshot_counts(pg) == before, "repair must not change sample/rollup counts"
+        assert pg.rows(f"SELECT {columns} FROM workouts ORDER BY id") == fixed_before
+
+    def test_repair_outcome_recorded_and_dedup_preserved(self, pg, api, archive):
+        api.post_real_workout()
+        archive.write_payload("2026", api.real_workout_payload())
+        api.repair_dir(archive.root)
+        row = pg.row("SELECT outcome, payload FROM raw_ingest")
+        assert row["outcome"] == "repaired", "repair must be visible in the audit outcome"
+
+    def test_plain_replay_does_not_reprocess_existing_sha(self, pg, api, archive):
+        """Without --force the sha gate short-circuits (the reason repair exists)."""
+        api.post_real_workout()
+        pg.execute(
+            "UPDATE workouts SET distance_km = NULL WHERE id = %s",
+            (TestRealWorkoutShapesEndToEnd.FIXTURE_ID,),
+        )
+        archive.write_payload("2026", api.real_workout_payload())
+        api.replay_dir(archive.root)  # no force
+        still_null = pg.scalar(
+            "SELECT distance_km FROM workouts WHERE id = %s",
+            (TestRealWorkoutShapesEndToEnd.FIXTURE_ID,),
+        )
+        assert still_null is None, "plain replay must not reprocess an existing sha"

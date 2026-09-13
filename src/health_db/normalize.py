@@ -23,6 +23,31 @@ Policies (ported from predecessor; iron laws 4/5):
   sleep_analysis unaggregated → one row per segment.
 - ``day_kst`` uses a FIXED UTC+9 offset (KST has no DST) — never a named
   timezone, never server-local time.
+
+Workout field shapes (HAE v2 real payloads vs simplified fixtures):
+
+- Real HAE v2 workouts wrap most scalars in ``{qty, units}`` objects
+  (``activeEnergyBurned``, ``totalEnergy``, ``distance``, ``avgHeartRate``,
+  ``maxHeartRate``, ``temperature``, ``humidity``, ``intensity``,
+  ``stepCadence``, ``speed``) and present several fields as per-minute point
+  LISTS (``activeEnergy``, ``basalEnergy``, ``stepCount``,
+  ``walkingAndRunningDistance``). The generic :func:`_qty_of` /
+  :func:`_sum_qty_of` helpers accept scalar, ``{qty|value}`` dict, and (where
+  summing is meaningful) list-of-points shapes, so both the real corpus and
+  the simplified test fixtures normalize identically.
+- ``activeEnergyBurned`` (dict or scalar) is preferred for active energy;
+  a scalar ``activeEnergy`` remains the fixture fallback. Total/basal energy
+  and the walking+running distance list are summed before conversion.
+- ALL workout energies are stored in **kcal**: ``active_energy_kcal``,
+  ``total_energy`` and ``basal_energy`` convert the declared kJ value with
+  kJ → kcal ÷ 4.184 (the single allowed conversion). The predecessor stored
+  ``total_energy``/``basal_energy`` raw kJ; this module deliberately unifies
+  on kcal.
+- ``heartRateData`` entries carry ``{date, Avg, Max, Min, units}`` in real
+  payloads (and ``{date, bpm}`` in fixtures): the stored ``heart_rate`` is
+  ``int(round(Avg))`` with a ``bpm`` fallback.
+- ``heartRateRecovery`` is a real point LIST, kept verbatim as a JSON array
+  in the ``heart_rate_recovery`` jsonb column.
 """
 
 from __future__ import annotations
@@ -222,7 +247,7 @@ class WorkoutRow:
     speed: float | None = None
     avg_heart_rate: float | None = None
     max_heart_rate: float | None = None
-    heart_rate_recovery: dict[str, object] | None = None
+    heart_rate_recovery: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +279,42 @@ def _num(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _qty_of(value: object) -> float | None:
+    """Extract a numeric quantity from any HAE v2 workout field shape.
+
+    Accepts a scalar int/float (bools rejected), a ``{qty|value: ...}``
+    object (HAE v2 wraps most workout scalars this way), and — where summing
+    is meaningful — delegates lists to :func:`_sum_qty_of` so a call site
+    cannot accidentally read a per-minute point list as a scalar. Returns
+    None for anything unrecognized.
+    """
+    if isinstance(value, list):
+        return _sum_qty_of(value)
+    if isinstance(value, dict):
+        return _num(value.get("qty", value.get("value")))
+    return _num(value)
+
+
+def _sum_qty_of(value: object) -> float | None:
+    """Sum a per-minute point list (``[{qty}, ...]``) or unwrap a single value.
+
+    HAE v2 emits ``activeEnergy``, ``basalEnergy``, ``stepCount`` and
+    ``walkingAndRunningDistance`` as lists of ``{date, qty, ...}`` points; the
+    predecessor's ``_sum_qty_list`` semantics (empty list → 0.0, dict point →
+    its ``qty``, scalar point → itself) are preserved so a field that sums
+    meaningfully can never silently yield None. Non-list input delegates to
+    :func:`_qty_of` (scalar/dict shapes stay supported for fixture parity).
+    """
+    if not isinstance(value, list):
+        return _qty_of(value)
+    total = 0.0
+    for point in value:
+        qty = _qty_of(point)
+        if qty is not None:
+            total += qty
+    return total
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -408,8 +469,14 @@ def metric_rows(document: object) -> list[SampleRow]:
 
 
 def _energy_kcal(value: object) -> float | None:
-    """Workout energy field: kJ → kcal ÷ 4.184 (the only conversion)."""
-    qty = _num(value)
+    """Workout energy field: kJ → kcal ÷ 4.184 (the only conversion).
+
+    Accepts the real HAE v2 shapes via :func:`_qty_of` — a ``{qty, units:
+    'kJ'}`` dict (``activeEnergyBurned``/``totalEnergy``) or a per-minute
+    point list (``activeEnergy``/``basalEnergy``) — and sums list shapes
+    before converting.
+    """
+    qty = _qty_of(value)
     return None if qty is None else qty / KJ_PER_KCAL
 
 
@@ -422,18 +489,25 @@ def _workout_ts(workout: dict[str, object], *keys: str) -> datetime | None:
 
 
 def _hr_rows(workout_id: str, heart_rate_data: object) -> list[HrRow]:
-    """``heartRateData`` entries ``{date, bpm}`` → HrRows (bad points skipped)."""
+    """``heartRateData`` entries → HrRows (bad points skipped).
+
+    Real HAE v2 points are ``{date, Avg, Max, Min, units}`` and store
+    ``int(round(Avg))`` (predecessor parity); simplified fixtures use
+    ``{date, bpm}`` and remain supported as the fallback.
+    """
     if not isinstance(heart_rate_data, list):
         return []
     rows: list[HrRow] = []
     for point in heart_rate_data:
         if not isinstance(point, dict):
             continue
-        bpm = _num(point.get("bpm"))
+        bpm = _num(point.get("Avg"))
+        if bpm is None:
+            bpm = _num(point.get("bpm"))
         ts = _parse_ts(point.get("date"))
         if bpm is None or ts is None:
             continue
-        rows.append(HrRow(workout_id, ts, int(bpm)))
+        rows.append(HrRow(workout_id, ts, int(round(bpm))))
     return rows
 
 
@@ -468,10 +542,13 @@ def _route_rows(workout_id: str, route: object) -> list[RouteRow]:
 
 
 def _step_count(step_count: object) -> int | None:
-    """``stepCount`` may arrive as a scalar or a ``{value|qty}`` object."""
-    if isinstance(step_count, dict):
-        step_count = step_count.get("value", step_count.get("qty"))
-    qty = _num(step_count)
+    """``stepCount`` may be a scalar, a ``{value|qty}`` object, or a point list.
+
+    Real HAE v2 emits a per-minute list (``[{date, qty, source, units}, ...]``)
+    which must be SUMMED (predecessor ``_sum_step_counts`` parity); the
+    scalar/object shapes are kept for simplified fixtures.
+    """
+    qty = _sum_qty_of(step_count)
     return None if qty is None else int(qty)
 
 
@@ -482,8 +559,37 @@ def _mets(workout: dict[str, object]) -> float | None:
     return None
 
 
-def _heart_rate_recovery(value: object) -> dict[str, object] | None:
-    return value if isinstance(value, dict) else None
+def _active_energy_kcal(workout: dict[str, object]) -> float | None:
+    """Active workout energy in kcal.
+
+    Prefers ``activeEnergyBurned`` (the real HAE v2 ``{qty, units: 'kJ'}``
+    object, or a scalar); falls back to a scalar/list ``activeEnergy`` so the
+    simplified test fixtures keep working (predecessor parity).
+    """
+    burned = _qty_of(workout.get("activeEnergyBurned"))
+    if burned is not None:
+        return burned / KJ_PER_KCAL
+    return _energy_kcal(workout.get("activeEnergy"))
+
+
+def _walking_running_distance(workout: dict[str, object]) -> float | None:
+    """``walkingAndRunningDistance`` point list summed in km.
+
+    Accepts the misspelled ``walkingRunningDistance`` key too (fixture alias).
+    """
+    for key in ("walkingAndRunningDistance", "walkingRunningDistance"):
+        if key in workout:
+            return _sum_qty_of(workout.get(key))
+    return None
+
+
+def _heart_rate_recovery(value: object) -> object | None:
+    """Keep ``heartRateRecovery`` verbatim: real payloads send a JSON array of
+    ``{date, Avg, Max, Min, units}`` points (also accept a legacy dict shape),
+    and it round-trips through the ``jsonb`` column unchanged."""
+    if isinstance(value, (dict, list)):
+        return value
+    return None
 
 
 def workout_rows(
@@ -526,24 +632,24 @@ def workout_rows(
             end_ts=end_ts,
             day_kst=day_kst(start_ts),
             duration_sec=duration,
-            active_energy_kcal=_energy_kcal(workout.get("activeEnergy")),
+            active_energy_kcal=_active_energy_kcal(workout),
             total_energy=_energy_kcal(workout.get("totalEnergy")),
             basal_energy=_energy_kcal(workout.get("basalEnergy")),
             mets=_mets(workout),
-            temperature=_num(workout.get("temperature")),
-            humidity=_num(workout.get("humidity")),
+            temperature=_qty_of(workout.get("temperature")),
+            humidity=_qty_of(workout.get("humidity")),
             is_indoor=workout.get("isIndoor")
             if isinstance(workout.get("isIndoor"), bool)
             else None,
             location=workout.get("location") if isinstance(workout.get("location"), str) else None,
-            intensity=_num(workout.get("intensity")),
-            distance_km=_num(workout.get("distance")),
-            walking_running_distance_km=_num(workout.get("walkingRunningDistance")),
+            intensity=_qty_of(workout.get("intensity")),
+            distance_km=_qty_of(workout.get("distance")),
+            walking_running_distance_km=_walking_running_distance(workout),
             step_count=_step_count(workout.get("stepCount")),
-            step_cadence=_num(workout.get("stepCadence")),
-            speed=_num(workout.get("speed")),
-            avg_heart_rate=_num(workout.get("avgHeartRate")),
-            max_heart_rate=_num(workout.get("maxHeartRate")),
+            step_cadence=_qty_of(workout.get("stepCadence")),
+            speed=_qty_of(workout.get("speed")),
+            avg_heart_rate=_qty_of(workout.get("avgHeartRate")),
+            max_heart_rate=_qty_of(workout.get("maxHeartRate")),
             heart_rate_recovery=_heart_rate_recovery(workout.get("heartRateRecovery")),
         )
         result.append(

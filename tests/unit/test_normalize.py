@@ -22,6 +22,8 @@ from health_db.normalize import (
     KJ_PER_KCAL,
     SampleRow,
     WorkoutRow,
+    _qty_of,
+    _sum_qty_of,
     canonical_unit_of,
     day_kst,
     display_name,
@@ -642,3 +644,166 @@ class TestWorkoutRows:
         )
         assert len(metric_rows(document)) == 1
         assert len(workout_rows(document)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Real HAE v2 workout shapes (the shapes the simplified fixtures never used)
+# ---------------------------------------------------------------------------
+
+
+def real_workout(**overrides: object) -> dict:
+    """A real-shape workout: {qty,units} dicts + per-minute point lists."""
+    base = {
+        "id": "A1B2C3D4-0000-1111-2222-333344445555",
+        "name": "Outdoor Run",
+        "start": "2026-09-08 18:57:52 +0900",
+        "end": "2026-09-08 19:46:55 +0900",
+        "duration": 2700.0,
+        "activeEnergyBurned": {"qty": 2100.0, "units": "kJ"},
+        "activeEnergy": [
+            {"date": "2026-09-08 18:57:52 +0900", "qty": 30.0, "units": "kJ"},
+            {"date": "2026-09-08 18:58:52 +0900", "qty": 40.0, "units": "kJ"},
+        ],
+        "totalEnergy": {"qty": 2400.0, "units": "kJ"},
+        "basalEnergy": [
+            {"date": "2026-09-08 18:57:52 +0900", "qty": 5.0, "units": "kJ"},
+            {"date": "2026-09-08 18:58:52 +0900", "qty": 6.0, "units": "kJ"},
+        ],
+        "distance": {"qty": 6.5, "units": "km"},
+        "avgHeartRate": {"qty": 150.0, "units": "count/min"},
+        "maxHeartRate": {"qty": 180, "units": "count/min"},
+        "temperature": {"qty": 22.0, "units": "degC"},
+        "humidity": {"qty": 50, "units": "%"},
+        "intensity": {"qty": 9.0, "units": "kcal/hr·kg"},
+        "stepCadence": {"qty": 170.0, "units": "count/min"},
+        "speed": {"qty": 8.0, "units": "km/hr"},
+        "stepCount": [
+            {"date": "2026-09-08 18:57:52 +0900", "qty": 170.0, "units": "count"},
+            {"date": "2026-09-08 18:58:52 +0900", "qty": 171.0, "units": "count"},
+        ],
+        "walkingAndRunningDistance": [
+            {"date": "2026-09-08 18:57:52 +0900", "qty": 0.15, "units": "km"},
+            {"date": "2026-09-08 18:58:52 +0900", "qty": 0.16, "units": "km"},
+        ],
+        "heartRateData": [
+            {"date": "2026-09-08 18:57:00 +0900", "Avg": 105, "Min": 105, "Max": 105},
+            {"date": "2026-09-08 18:58:00 +0900", "Avg": 114, "Min": 101, "Max": 124},
+            {"date": "2026-09-08 18:59:00 +0900", "Avg": 132.75, "Min": 128, "Max": 134},
+        ],
+        "heartRateRecovery": [
+            {"date": "2026-09-08 19:46:55 +0900", "Avg": 165, "Min": 165, "Max": 165},
+            {"date": "2026-09-08 19:47:00 +0900", "Avg": 166, "Min": 166, "Max": 166},
+        ],
+        "route": [
+            {
+                "timestamp": "2026-09-08 18:57:52 +0900",
+                "latitude": REDACTED,
+                "longitude": REDACTED,
+                "altitude": 40.0,
+            }
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+class TestRealWorkoutShapes:
+    def test_all_scalar_dict_fields_are_read(self):
+        row = workout_rows(doc(workouts=[real_workout()]))[0][0]
+        assert row.active_energy_kcal == pytest.approx(2100.0 / KJ_PER_KCAL)
+        assert row.distance_km == pytest.approx(6.5)
+        assert row.avg_heart_rate == pytest.approx(150.0)
+        assert row.max_heart_rate == 180
+        assert row.temperature == pytest.approx(22.0)
+        assert row.humidity == 50
+        assert row.intensity == pytest.approx(9.0)
+        assert row.step_cadence == pytest.approx(170.0)
+        assert row.speed == pytest.approx(8.0)
+
+    def test_energy_lists_summed_then_converted(self):
+        row = workout_rows(doc(workouts=[real_workout()]))[0][0]
+        assert row.total_energy == pytest.approx(2400.0 / KJ_PER_KCAL)
+        assert row.basal_energy == pytest.approx((5.0 + 6.0) / KJ_PER_KCAL)
+
+    def test_active_energy_burned_preferred_over_active_energy_list(self):
+        row = workout_rows(doc(workouts=[real_workout()]))[0][0]
+        assert row.active_energy_kcal == pytest.approx(2100.0 / KJ_PER_KCAL)
+        assert row.active_energy_kcal != pytest.approx((30.0 + 40.0) / KJ_PER_KCAL)
+
+    def test_active_energy_burned_scalar_fallback(self):
+        row = workout_rows(doc(workouts=[real_workout(activeEnergyBurned=418.4)]))[0][0]
+        assert row.active_energy_kcal == pytest.approx(100.0)
+
+    def test_active_energy_list_fallback_when_burned_absent(self):
+        workout = real_workout()
+        del workout["activeEnergyBurned"]
+        row = workout_rows(doc(workouts=[workout]))[0][0]
+        assert row.active_energy_kcal == pytest.approx((30.0 + 40.0) / KJ_PER_KCAL)
+
+    def test_step_count_list_summed(self):
+        row = workout_rows(doc(workouts=[real_workout()]))[0][0]
+        assert row.step_count == int(170.0 + 171.0)
+
+    def test_walking_and_running_distance_list_summed(self):
+        row = workout_rows(doc(workouts=[real_workout()]))[0][0]
+        assert row.walking_running_distance_km == pytest.approx(0.15 + 0.16)
+
+    def test_walking_running_distance_legacy_key_alias(self):
+        workout = real_workout()
+        del workout["walkingAndRunningDistance"]
+        workout["walkingRunningDistance"] = [
+            {"qty": 1.5, "units": "km"},
+            {"qty": 2.5, "units": "km"},
+        ]
+        row = workout_rows(doc(workouts=[workout]))[0][0]
+        assert row.walking_running_distance_km == pytest.approx(4.0)
+
+    def test_hr_rows_use_avg_rounded(self):
+        (_, hr, _) = workout_rows(doc(workouts=[real_workout()]))[0]
+        assert [r.heart_rate for r in hr] == [105, 114, 133]
+        assert hr[0].ts == datetime(2026, 9, 8, 18, 57, tzinfo=KST)
+
+    def test_recovery_list_kept_verbatim(self):
+        row = workout_rows(doc(workouts=[real_workout()]))[0][0]
+        assert isinstance(row.heart_rate_recovery, list)
+        assert row.heart_rate_recovery[0]["Avg"] == 165
+        assert len(row.heart_rate_recovery) == 2
+
+    def test_route_rows_real_shape(self):
+        (_, _, route) = workout_rows(doc(workouts=[real_workout()]))[0]
+        assert len(route) == 1
+        assert route[0].latitude == pytest.approx(REDACTED)
+
+
+class TestQtyHelpers:
+    """The generic scalar/{qty|value}/list extractor used by workout fields."""
+
+    def test_scalar(self):
+        assert _qty_of(5) == 5.0
+        assert _qty_of(5.5) == 5.5
+
+    def test_bool_rejected(self):
+        assert _qty_of(True) is None
+        assert _qty_of(False) is None
+
+    def test_qty_dict(self):
+        assert _qty_of({"qty": 3.5, "units": "km"}) == 3.5
+
+    def test_value_dict(self):
+        assert _qty_of({"value": 7}) == 7.0
+
+    def test_list_summed(self):
+        assert _qty_of([{"qty": 1}, {"qty": 2}]) == 3.0
+
+    def test_empty_list_zero(self):
+        assert _qty_of([]) == 0.0
+
+    def test_none_and_unrecognized(self):
+        assert _qty_of(None) is None
+        assert _qty_of("nope") is None
+        assert _qty_of({"other": 1}) is None
+
+    def test_sum_qty_of_non_list_delegates(self):
+        assert _sum_qty_of(4) == 4.0
+        assert _sum_qty_of({"qty": 4}) == 4.0
+        assert _sum_qty_of([{"qty": 1}, 2, {"value": 3}]) == 6.0

@@ -43,10 +43,12 @@ class FakeIngest:
     results: dict[str, object] = field(default_factory=dict)
     fail_shas: set[str] = field(default_factory=set)
     calls: list[tuple[str, str, str]] = field(default_factory=list)  # (sha, body, outcome)
+    forces: list[bool] = field(default_factory=list)
 
-    def __call__(self, pool, document, *, sha256, body, headers, outcome):
+    def __call__(self, pool, document, *, sha256, body, headers, outcome, force=False):
         assert pool == "fake-pool", "replay must pass its pool through"
         self.calls.append((sha256, body.decode("utf-8"), outcome))
+        self.forces.append(force)
         if sha256 in self.fail_shas:
             raise RuntimeError("simulated store-stage failure")
         return self.results.get(sha256, "stored")
@@ -152,6 +154,27 @@ class TestReplayDir:
         report = replay.replay_dir(tmp_path, "fake-pool", ingest=FakeIngest())
         encoded = json.dumps(report.summary())
         assert json.loads(encoded)["processed"] == 1
+
+    def test_force_flag_propagates_to_ingest_and_summary(self, tmp_path, fake_pool):
+        day = tmp_path / "2026" / "01" / "01"
+        day.mkdir(parents=True)
+        (day / "a.json").write_bytes(json.dumps(metrics_payload()).encode("utf-8"))
+        ingest = FakeIngest()
+
+        report = replay.replay_dir(tmp_path, "fake-pool", ingest=ingest, force=True)
+
+        assert ingest.forces == [True], "repair must send force=True to the pipeline"
+        assert report.force is True
+        assert report.summary()["force"] is True
+
+    def test_default_force_is_false(self, tmp_path, fake_pool):
+        day = tmp_path / "2026" / "01" / "01"
+        day.mkdir(parents=True)
+        (day / "a.json").write_bytes(json.dumps(metrics_payload()).encode("utf-8"))
+        ingest = FakeIngest()
+        report = replay.replay_dir(tmp_path, "fake-pool", ingest=ingest)
+        assert ingest.forces == [False]
+        assert report.summary()["force"] is False
 
 
 class TestReplayPending:
@@ -304,8 +327,8 @@ class TestCli:
         monkeypatch.setattr(
             replay,
             "replay_dir",
-            lambda root, pool=None, *, ingest=None: replay.ReplayReport(
-                root=str(root), mode="dir", seen=1, processed=1
+            lambda root, pool=None, *, ingest=None, force=False: replay.ReplayReport(
+                root=str(root), mode="dir", force=force, seen=1, processed=1
             ),
         )
         monkeypatch.setattr(db_pool, "check", lambda pool=None, timeout=3.0: True)
@@ -340,3 +363,24 @@ class TestCli:
         captured = capsys.readouterr()
         assert captured.out == "", "failure must not emit a JSON summary to stdout"
         assert "unreachable" in captured.err
+
+    @pytest.mark.parametrize("flag", ["--force", "--repair"])
+    def test_force_flag_reaches_replay_dir(self, flag, tmp_path, monkeypatch, capsys, fake_pool):
+        import health_db.config as config
+        from health_db.db import pool as db_pool
+
+        seen: dict[str, object] = {}
+
+        def fake_replay_dir(root, pool=None, *, ingest=None, force=False):
+            seen["force"] = force
+            return replay.ReplayReport(root=str(root), mode="dir", force=force, seen=1)
+
+        monkeypatch.setattr(replay, "replay_dir", fake_replay_dir)
+        monkeypatch.setattr(db_pool, "check", lambda pool=None, timeout=3.0: True)
+        monkeypatch.setattr(config, "ARCHIVE_ROOT", tmp_path)
+
+        code = replay.main([flag])
+
+        assert code == 0
+        assert seen["force"] is True
+        assert json.loads(capsys.readouterr().out)["force"] is True
