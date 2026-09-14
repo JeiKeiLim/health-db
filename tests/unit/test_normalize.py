@@ -652,22 +652,27 @@ class TestWorkoutRows:
 
 
 def real_workout(**overrides: object) -> dict:
-    """A real-shape workout: {qty,units} dicts + per-minute point lists."""
+    """A real-shape workout: {qty,units} dicts + per-minute point lists.
+
+    Values are deliberately synthetic (clearly-fake 2023-01-15 date, round
+    scalars, 12.34/56.78 grid) while every real payload SHAPE is preserved —
+    that shape coverage is what this fixture exists to guard.
+    """
     base = {
         "id": "A1B2C3D4-0000-1111-2222-333344445555",
         "name": "Outdoor Run",
-        "start": "2026-09-08 18:57:52 +0900",
-        "end": "2026-09-08 19:46:55 +0900",
+        "start": "2023-01-15 18:57:52 +0900",
+        "end": "2023-01-15 19:46:55 +0900",
         "duration": 2700.0,
         "activeEnergyBurned": {"qty": 2100.0, "units": "kJ"},
         "activeEnergy": [
-            {"date": "2026-09-08 18:57:52 +0900", "qty": 30.0, "units": "kJ"},
-            {"date": "2026-09-08 18:58:52 +0900", "qty": 40.0, "units": "kJ"},
+            {"date": "2023-01-15 18:57:52 +0900", "qty": 30.0, "units": "kJ"},
+            {"date": "2023-01-15 18:58:52 +0900", "qty": 40.0, "units": "kJ"},
         ],
         "totalEnergy": {"qty": 2400.0, "units": "kJ"},
         "basalEnergy": [
-            {"date": "2026-09-08 18:57:52 +0900", "qty": 5.0, "units": "kJ"},
-            {"date": "2026-09-08 18:58:52 +0900", "qty": 6.0, "units": "kJ"},
+            {"date": "2023-01-15 18:57:52 +0900", "qty": 5.0, "units": "kJ"},
+            {"date": "2023-01-15 18:58:52 +0900", "qty": 6.0, "units": "kJ"},
         ],
         "distance": {"qty": 6.5, "units": "km"},
         "avgHeartRate": {"qty": 150.0, "units": "count/min"},
@@ -678,27 +683,27 @@ def real_workout(**overrides: object) -> dict:
         "stepCadence": {"qty": 170.0, "units": "count/min"},
         "speed": {"qty": 8.0, "units": "km/hr"},
         "stepCount": [
-            {"date": "2026-09-08 18:57:52 +0900", "qty": 170.0, "units": "count"},
-            {"date": "2026-09-08 18:58:52 +0900", "qty": 171.0, "units": "count"},
+            {"date": "2023-01-15 18:57:52 +0900", "qty": 170.0, "units": "count"},
+            {"date": "2023-01-15 18:58:52 +0900", "qty": 171.0, "units": "count"},
         ],
         "walkingAndRunningDistance": [
-            {"date": "2026-09-08 18:57:52 +0900", "qty": 0.15, "units": "km"},
-            {"date": "2026-09-08 18:58:52 +0900", "qty": 0.16, "units": "km"},
+            {"date": "2023-01-15 18:57:52 +0900", "qty": 0.15, "units": "km"},
+            {"date": "2023-01-15 18:58:52 +0900", "qty": 0.16, "units": "km"},
         ],
         "heartRateData": [
-            {"date": "2026-09-08 18:57:00 +0900", "Avg": 105, "Min": 105, "Max": 105},
-            {"date": "2026-09-08 18:58:00 +0900", "Avg": 114, "Min": 101, "Max": 124},
-            {"date": "2026-09-08 18:59:00 +0900", "Avg": 132.75, "Min": 128, "Max": 134},
+            {"date": "2023-01-15 18:57:00 +0900", "Avg": 105, "Min": 105, "Max": 105},
+            {"date": "2023-01-15 18:58:00 +0900", "Avg": 114, "Min": 101, "Max": 124},
+            {"date": "2023-01-15 18:59:00 +0900", "Avg": 132.75, "Min": 128, "Max": 134},
         ],
         "heartRateRecovery": [
-            {"date": "2026-09-08 19:46:55 +0900", "Avg": 165, "Min": 165, "Max": 165},
-            {"date": "2026-09-08 19:47:00 +0900", "Avg": 166, "Min": 166, "Max": 166},
+            {"date": "2023-01-15 19:46:55 +0900", "Avg": 165, "Min": 165, "Max": 165},
+            {"date": "2023-01-15 19:47:00 +0900", "Avg": 166, "Min": 166, "Max": 166},
         ],
         "route": [
             {
-                "timestamp": "2026-09-08 18:57:52 +0900",
-                "latitude": REDACTED,
-                "longitude": REDACTED,
+                "timestamp": "2023-01-15 18:57:52 +0900",
+                "latitude": 12.34,
+                "longitude": 56.78,
                 "altitude": 40.0,
             }
         ],
@@ -761,7 +766,7 @@ class TestRealWorkoutShapes:
     def test_hr_rows_use_avg_rounded(self):
         (_, hr, _) = workout_rows(doc(workouts=[real_workout()]))[0]
         assert [r.heart_rate for r in hr] == [105, 114, 133]
-        assert hr[0].ts == datetime(2026, 9, 8, 18, 57, tzinfo=KST)
+        assert hr[0].ts == datetime(2023, 1, 15, 18, 57, tzinfo=KST)
 
     def test_recovery_list_kept_verbatim(self):
         row = workout_rows(doc(workouts=[real_workout()]))[0][0]
@@ -772,7 +777,35 @@ class TestRealWorkoutShapes:
     def test_route_rows_real_shape(self):
         (_, _, route) = workout_rows(doc(workouts=[real_workout()]))[0]
         assert len(route) == 1
-        assert route[0].latitude == pytest.approx(REDACTED)
+        assert route[0].latitude == pytest.approx(12.34)
+
+
+class TestRecomputeRollupsSqlContract:
+    """The production recompute SQL must pin the float8 accumulation order.
+
+    ``sum``/``avg`` over float8 are order-sensitive; PostgreSQL's parallel and
+    hash aggregation may visit rows in an arbitrary physical order, which a
+    repair re-run changes (every row is re-UPDATE'd). Pinning
+    ``ORDER BY source_id, ts`` (the ``raw_samples`` PK) makes the rollup values
+    reproducible across replays.
+
+    This is an explicit SQL-contract assertion against the *real* production
+    constant, so it fails the instant that clause is dropped. A content-level
+    md5 snapshot across repairs cannot provide this guarantee: a small,
+    plan-stable table returns identical sums for both accumulation orders.
+    """
+
+    def test_recompute_rollups_sql_is_order_deterministic(self):
+        from health_db.db.helpers import RECOMPUTE_ROLLUPS
+
+        assert "sum(qty ORDER BY source_id, ts)" in RECOMPUTE_ROLLUPS
+        assert "avg(qty ORDER BY source_id, ts)" in RECOMPUTE_ROLLUPS
+
+    def test_recompute_rollups_sql_has_no_unpinned_float8_aggregate(self):
+        from health_db.db.helpers import RECOMPUTE_ROLLUPS
+
+        assert "sum(qty)" not in RECOMPUTE_ROLLUPS
+        assert "avg(qty)" not in RECOMPUTE_ROLLUPS
 
 
 class TestQtyHelpers:

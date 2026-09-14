@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -265,38 +266,61 @@ def make_metrics_payload(qty: float = 8500.0, date: str = "2026-09-08 09:00:00 +
 
 
 def repair_fixture_payload() -> dict:
-    """Payload for the repair regression: real metric samples + the workout.
+    """Payload for the repair regression: order-sensitive metrics + workout.
 
-    Two metric groups with enough points to populate ``daily_rollups`` with
-    real ``{qty, date}`` samples:
-    - ``step_count`` (count): 8 points on 2026-09-08, all "Apple Watch",
-    - ``heart_rate`` (count/min Avg-shape): 3 points on 2026-09-08.
+    The rollup guard must have teeth: ``sum``/``avg`` over float8 are
+    order-sensitive, so a non-deterministic recompute only shows up when the
+    accumulation order *materially* changes the result. Two ingredients make
+    that happen here:
 
+    - **Interleaved sources.** ``step_count`` alternates ``Apple Watch`` /
+      ``iPhone``, so the ``raw_samples`` PK order ``(metric_id, source_id,
+      ts)`` — which the production ``ORDER BY source_id, ts`` pins — is a
+      *different* sequence from payload/insertion order. After a repair
+      re-UPDATEs every row (new tuple versions, possibly an index-scan plan),
+      an unpinned ``sum(qty)`` accumulates in the other order.
+    - **Catastrophic cancellation.** ``1e16`` / ``-1e16`` end-points with
+      ``0.5`` fillers cancel to ~0 in one order but not the other, so the
+      drift is visible at float64 magnitude rather than a ULP.
+
+    60 ``step_count`` points + 3 ``heart_rate`` points populate two rollups.
     The workout is the same real-shape fixture the repair path targets, so a
     single payload exercises BOTH the workout repair and the metric/rollup
-    recompute in one force-replay (and the rollup md5 guard is only
-    meaningful when raw_samples/rollups actually hold rows).
+    recompute in one force-replay.
     """
     document = real_workout_payload()
+    small = 0.5
+    start = datetime(2026, 9, 8, 8, 0, 0)
+    step_data = []
+    for i in range(60):
+        if i == 0:
+            qty = 1e16
+        elif i == 59:
+            qty = -1e16
+        else:
+            qty = small
+        ts = start + timedelta(minutes=i)
+        step_data.append(
+            {
+                "qty": qty,
+                "date": ts.strftime("%Y-%m-%d %H:%M:%S +0900"),
+                "source": "Apple Watch" if i % 2 == 0 else "iPhone",
+            }
+        )
     document["data"]["metrics"] = [
         {
             "name": "step_count",
             "units": "count",
-            "data": [
-                {
-                    "qty": 900.0 + 7 * i + i * 0.001,
-                    "date": f"2026-09-08 {8 + i // 2:02d}:{(i % 2) * 30:02d}:00 +0900",
-                    "source": "Apple Watch",
-                }
-                for i in range(8)
-            ],
+            "data": step_data,
         },
         {
             "name": "heart_rate",
             "units": "count/min",
             "data": [
                 {
-                    "date": f"2026-09-08 {8 + i:02d}:15:00 +0900",
+                    "date": (start + timedelta(minutes=i)).strftime(
+                        "%Y-%m-%d %H:%M:%S +0900"
+                    ),
                     "Min": 60 + i,
                     "Avg": 70.5 + i,
                     "Max": 90 + i,
