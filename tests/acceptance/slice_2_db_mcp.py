@@ -544,6 +544,98 @@ class TestWorkoutRepairPath:
         assert self._snapshot_counts(pg) == before, "repair must not change sample/rollup counts"
         assert pg.rows(f"SELECT {columns} FROM workouts ORDER BY id") == fixed_before
 
+    # --- Content-level guards: raw_samples / daily_rollups must be
+    #     byte-identical across force-replays, even with real metric rows
+    #     present (a count-only check is trivially true when the fixture is
+    #     metrics:[]). ---
+
+    @staticmethod
+    def _samples_md5(pg) -> str:
+        """md5 of ordered raw_samples content (all columns except the
+        ``ingested_at`` audit stamp, which legitimately advances on each
+        latest-wins repair — same exclusion the workout comparison uses)."""
+        return pg.scalar(
+            """
+            SELECT md5(string_agg(
+                metric_id::text || '|' || source_id::text || '|' || ts::text
+                || '|' || qty::text || '|' || day_kst::text,
+                E'\\n' ORDER BY metric_id, source_id, ts))
+            FROM raw_samples
+            """
+        )
+
+    @staticmethod
+    def _rollups_md5(pg) -> str:
+        """md5 of ordered daily_rollups content (all columns except the
+        ``updated_at`` audit stamp, which advances on each recompute — the
+        order-sensitive float8 values themselves are what must be stable)."""
+        return pg.scalar(
+            """
+            SELECT md5(string_agg(
+                metric_id::text || '|' || day_kst::text || '|' || sum_qty::text
+                || '|' || avg_qty::text || '|' || min_qty::text
+                || '|' || max_qty::text || '|' || sample_count::text,
+                E'\\n' ORDER BY metric_id, day_kst))
+            FROM daily_rollups
+            """
+        )
+
+    def test_force_repair_leaves_samples_and_rollups_byte_identical(
+        self, pg, api, archive
+    ):
+        """Force-repair is byte-idempotent for raw_samples AND daily_rollups.
+
+        The repair regression ingests a payload with REAL metric samples
+        (step_count + heart_rate, real ``{qty, date}`` shape) so
+        ``daily_rollups`` is genuinely populated — without that, a
+        "rollups unchanged" assertion over a metrics:[] fixture would be
+        trivially true. Both tables are snapshotted by row count AND full
+        md5 of ordered content, and ``raw_ingest.received_at`` is asserted
+        unchanged (repair refreshes payload/outcome in place but must
+        preserve the original receive stamp).
+
+        Crucially this runs force-repair TWICE and compares the two rollup
+        md5s: the float8 ``sum``/``avg`` aggregates are order-sensitive, so
+        a non-deterministic recompute (parallel/hash aggregation over a heap
+        order that each repair re-UPDATE perturbs) is caught as a ULP-level
+        md5 drift — the exact regression observed on the dev DB.
+        """
+        payload = api.repair_fixture_payload()
+        api.post_repair_fixture()
+
+        # Populated guards (fail loudly if the fixture ever loses its metrics).
+        assert pg.scalar("SELECT count(*) FROM raw_samples") == 8 + 3
+        assert pg.scalar("SELECT count(*) FROM daily_rollups") == 2
+
+        received_at = pg.scalar("SELECT received_at FROM raw_ingest")
+
+        archive.write_payload("2026", payload)
+
+        def snapshot() -> tuple[int, int, str, str, object]:
+            return (
+                pg.scalar("SELECT count(*) FROM raw_samples"),
+                pg.scalar("SELECT count(*) FROM daily_rollups"),
+                self._samples_md5(pg),
+                self._rollups_md5(pg),
+                pg.scalar("SELECT received_at FROM raw_ingest"),
+            )
+
+        before = snapshot()
+        assert before[4] == received_at, "received_at must be preserved by repair"
+
+        assert api.repair_dir(archive.root) == 1
+        after_first = snapshot()
+        assert after_first == before, "force-repair changed sample/rollup content"
+
+        # Second consecutive force-replay: the regression is ULP-level drift
+        # between two repairs, so compare the rollup md5 directly.
+        api.repair_dir(archive.root)
+        after_second = snapshot()
+        assert after_second == after_first, (
+            "consecutive force-repairs must be byte-identical "
+            f"(rollups md5 {after_first[3]} != {after_second[3]})"
+        )
+
     def test_repair_outcome_recorded_and_dedup_preserved(self, pg, api, archive):
         api.post_real_workout()
         archive.write_payload("2026", api.real_workout_payload())

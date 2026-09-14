@@ -186,13 +186,17 @@ def seeded(pg):
             cur.executemany(UPSERT_SAMPLE_SQL, rows)
 
         # Rollups recomputed from the STORED generated column — exactly the
-        # semantics the ingest pipeline's DELETE+INSERT recompute produces.
+        # semantics the ingest pipeline's DELETE+INSERT recompute produces
+        # (including the deterministic aggregate ORDER BY that makes float8
+        # sum/avg order-insensitive).
         conn.execute(
             """
             INSERT INTO daily_rollups
                 (metric_id, day_kst, sum_qty, avg_qty, min_qty, max_qty,
                  sample_count, updated_at)
-            SELECT metric_id, day_kst, sum(qty), avg(qty), min(qty), max(qty),
+            SELECT metric_id, day_kst,
+                   sum(qty ORDER BY source_id, ts), avg(qty ORDER BY source_id, ts),
+                   min(qty), max(qty),
                    count(*), now()
             FROM raw_samples
             GROUP BY metric_id, day_kst

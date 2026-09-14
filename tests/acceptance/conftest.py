@@ -264,6 +264,50 @@ def make_metrics_payload(qty: float = 8500.0, date: str = "2026-09-08 09:00:00 +
     }
 
 
+def repair_fixture_payload() -> dict:
+    """Payload for the repair regression: real metric samples + the workout.
+
+    Two metric groups with enough points to populate ``daily_rollups`` with
+    real ``{qty, date}`` samples:
+    - ``step_count`` (count): 8 points on 2026-09-08, all "Apple Watch",
+    - ``heart_rate`` (count/min Avg-shape): 3 points on 2026-09-08.
+
+    The workout is the same real-shape fixture the repair path targets, so a
+    single payload exercises BOTH the workout repair and the metric/rollup
+    recompute in one force-replay (and the rollup md5 guard is only
+    meaningful when raw_samples/rollups actually hold rows).
+    """
+    document = real_workout_payload()
+    document["data"]["metrics"] = [
+        {
+            "name": "step_count",
+            "units": "count",
+            "data": [
+                {
+                    "qty": 900.0 + 7 * i + i * 0.001,
+                    "date": f"2026-09-08 {8 + i // 2:02d}:{(i % 2) * 30:02d}:00 +0900",
+                    "source": "Apple Watch",
+                }
+                for i in range(8)
+            ],
+        },
+        {
+            "name": "heart_rate",
+            "units": "count/min",
+            "data": [
+                {
+                    "date": f"2026-09-08 {8 + i:02d}:15:00 +0900",
+                    "Min": 60 + i,
+                    "Avg": 70.5 + i,
+                    "Max": 90 + i,
+                }
+                for i in range(3)
+            ],
+        },
+    ]
+    return document
+
+
 def make_workout_payload() -> dict:
     """Valid workout payload with HR + route (kJ energies; UUID-stable id)."""
     return {
@@ -407,6 +451,12 @@ class Api:
         res = self._client.post("/api/ingest", content=body_bytes, headers=self._headers)
         return self._maybe_json(res)
 
+    def post_payload(self, payload: dict) -> object:
+        """POST an arbitrary payload document through the real ingest route."""
+        body_bytes = json.dumps(payload).encode("utf-8")
+        res = self._client.post("/api/ingest", content=body_bytes, headers=self._headers)
+        return self._maybe_json(res)
+
     def post_real_workout(self) -> object:
         """POST the sanitized REAL-shape workout fixture (regression guard).
 
@@ -421,6 +471,14 @@ class Api:
     def real_workout_payload(self) -> dict:
         """The sanitized real-shape payload (for writing into a replay archive)."""
         return real_workout_payload()
+
+    def repair_fixture_payload(self) -> dict:
+        """Real metric samples + the real-shape workout (repair regression)."""
+        return repair_fixture_payload()
+
+    def post_repair_fixture(self) -> object:
+        """POST the repair regression payload through the real ingest route."""
+        return self.post_payload(repair_fixture_payload())
 
     def post_workout_recovery(self, recovery: object) -> object:
         """POST a workout carrying a non-empty ``heartRateRecovery`` value.

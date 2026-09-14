@@ -99,7 +99,10 @@ DELETE_ROLLUPS = "DELETE FROM daily_rollups WHERE day_kst = ANY(%s)"
 RECOMPUTE_ROLLUPS = """
 INSERT INTO daily_rollups (metric_id, day_kst, sum_qty, avg_qty, min_qty,
                            max_qty, sample_count, updated_at)
-SELECT metric_id, day_kst, sum(qty), avg(qty), min(qty), max(qty),
+SELECT metric_id, day_kst,
+       sum(qty ORDER BY source_id, ts),
+       avg(qty ORDER BY source_id, ts),
+       min(qty), max(qty),
        count(*)::bigint, now()
 FROM raw_samples
 WHERE day_kst = ANY(%s)
@@ -173,6 +176,15 @@ def recompute_rollups(conn: object, days: frozenset[date]) -> tuple[int, int]:
     transaction — the rollup always reflects the full raw_sample set for the
     day after latest-wins corrections, never a partial increment. Returns
     ``(deleted, inserted)`` row counts.
+
+    ``sum``/``avg`` are computed with an explicit ``ORDER BY source_id, ts``
+    (the raw_samples PK) so the float8 accumulation order is deterministic.
+    Without it PostgreSQL's parallel/hash aggregation order varies with the
+    physical row order, which a repair re-run changes (every row is
+    re-UPDATE'd → new tuple versions → different heap scan order), making the
+    rollup values drift at ULP level between identical replays. Pinning the
+    order makes force-repair byte-reproducible (rollup md5 stable across
+    consecutive runs) while ``min``/``max``/``count`` are order-insensitive.
     """
     if not days:
         return 0, 0
