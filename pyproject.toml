@@ -1,0 +1,54 @@
+[project]
+name = "health-db"
+version = "0.1.0"
+description = "Self-hosted Health Auto Export ingest + PostgreSQL storage + MCP query platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "mcp>=2,<3",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+health-db = "health_db.main:main"
+health-mcp = "health_db.mcp_server:main"
+health-migrate = "health_db.db.migrations:main"
+health-replay = "health_db.replay:main"
+health = "health_db.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.8.10,<0.9"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "health_db"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "slice_*.py"]
+addopts = "-q"
+markers = [
+    "slice1: slice-1 ingest-validation acceptance tests",
+    "slice2: slice-2 database/MCP acceptance tests",
+    "requires_pg: test needs a disposable PostgreSQL container",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["health_db"]

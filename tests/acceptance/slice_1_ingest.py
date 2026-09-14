@@ -15,10 +15,24 @@ stats. NO PostgreSQL writes in this slice.
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.slice1
+
+# The stored-outcome response contract (spec §API Endpoints): exactly these
+# 8 keys, every one asserted in the acceptance tests below.
+STORED_RESPONSE_KEYS = {
+    "outcome",
+    "data_type",
+    "metrics",
+    "samples",
+    "workouts",
+    "unknown_formats",
+    "archive_path",
+    "sha256",
+}
 
 # ---------------------------------------------------------------------------
 # Fixtures: realistic HAE JSON v2 payload shapes (from research/hae-json-v2-format.md)
@@ -33,30 +47,34 @@ def make_metrics_payload(automation: str = "metrics-all") -> dict:
                     "name": "step_count",
                     "units": "count",
                     "data": [
-                        {"qty": 8500, "date": "2026-09-08 09:00:00 +0900",
-                         "source": "Apple Watch"},
-                        {"qty": 120, "date": "2026-09-08 10:00:00 +0900",
-                         "source": "Apple Watch"},
+                        {"qty": 8500, "date": "2026-09-08 09:00:00 +0900", "source": "Apple Watch"},
+                        {"qty": 120, "date": "2026-09-08 10:00:00 +0900", "source": "Apple Watch"},
                     ],
                 },
                 {  # heart_rate: Min/Avg/Max shape, no qty
                     "name": "heart_rate",
                     "units": "count/min",
                     "data": [
-                        {"date": "2026-09-08 09:00:00 +0900",
-                         "Min": 65, "Avg": 72, "Max": 85},
+                        {"date": "2026-09-08 09:00:00 +0900", "Min": 65, "Avg": 72, "Max": 85},
                     ],
                 },
                 {  # sleep_analysis aggregated shape, no qty
                     "name": "sleep_analysis",
                     "units": "hr",
                     "data": [
-                        {"date": "2026-09-08", "totalSleep": 7.5, "asleep": 7.0,
-                         "core": 3.5, "deep": 1.5, "rem": 2.0,
-                         "sleepStart": "2026-09-07 23:00:00 +0900",
-                         "sleepEnd": "2026-09-08 06:30:00 +0900",
-                         "inBed": 8.0, "inBedStart": "2026-09-07 22:45:00 +0900",
-                         "inBedEnd": "2026-09-08 06:45:00 +0900"},
+                        {
+                            "date": "2026-09-08",
+                            "totalSleep": 7.5,
+                            "asleep": 7.0,
+                            "core": 3.5,
+                            "deep": 1.5,
+                            "rem": 2.0,
+                            "sleepStart": "2026-09-07 23:00:00 +0900",
+                            "sleepEnd": "2026-09-08 06:30:00 +0900",
+                            "inBed": 8.0,
+                            "inBedStart": "2026-09-07 22:45:00 +0900",
+                            "inBedEnd": "2026-09-08 06:45:00 +0900",
+                        },
                     ],
                 },
             ],
@@ -77,13 +95,19 @@ def make_workout_payload() -> dict:
                     "end": "2026-09-08 07:47:00 +0900",
                     "duration": 2700,
                     "activeEnergy": 1420.8,  # kJ
-                    "heartRateData": [{"date": "2026-09-08 07:03:00 +0900",
-                                       "bpm": 128}],
-                    "route": [{"timestamp": "2026-09-08 07:03:00 +0900",
-                               "latitude": 37.33, "longitude": 127.01,
-                               "altitude": 10.0, "course": 180.0, "speed": 2.5,
-                               "horizontalAccuracy": 5.0,
-                               "verticalAccuracy": 8.0}],
+                    "heartRateData": [{"date": "2026-09-08 07:03:00 +0900", "bpm": 128}],
+                    "route": [
+                        {
+                            "timestamp": "2026-09-08 07:03:00 +0900",
+                            "latitude": 37.33,
+                            "longitude": 127.01,
+                            "altitude": 10.0,
+                            "course": 180.0,
+                            "speed": 2.5,
+                            "horizontalAccuracy": 5.0,
+                            "verticalAccuracy": 8.0,
+                        }
+                    ],
                 }
             ],
         }
@@ -96,6 +120,24 @@ def body(payload: dict) -> bytes:
 
 def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
+
+
+def assert_stored_shape(out: dict) -> None:
+    """Assert the full 8-key stored-response contract (no missing, no extra)."""
+    assert set(out) == STORED_RESPONSE_KEYS, (
+        f"stored response must carry exactly the 8 contract keys; got {sorted(out)}"
+    )
+    assert out["outcome"] == "stored"
+    assert isinstance(out["data_type"], str) and out["data_type"] in {"metrics", "workouts"}
+    assert isinstance(out["metrics"], int) and out["metrics"] >= 0
+    assert isinstance(out["samples"], int) and out["samples"] >= 0
+    assert isinstance(out["workouts"], int) and out["workouts"] >= 0
+    assert isinstance(out["unknown_formats"], list)
+    for entry in out["unknown_formats"]:
+        assert set(entry) == {"name", "units", "reason"}
+    assert out["archive_path"], "must report the on-disk archive path"
+    assert Path(out["archive_path"]).is_file(), "reported archive_path must exist on disk"
+    assert isinstance(out["sha256"], str) and len(out["sha256"]) == 64
 
 
 @pytest.fixture()
@@ -111,6 +153,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
     monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
     from health_db.main import app
+
     return TestClient(app)
 
 
@@ -128,20 +171,26 @@ class TestAcceptsAndArchives:
         res = client.post("/api/ingest", content=b, headers=HDR)
         assert res.status_code == 200
         out = res.json()
-        assert out["outcome"] == "stored"
-        assert out["metrics"] == 3          # 3 metric groups seen
-        assert out["samples"] == 4          # 2+1+1 data points
+        assert_stored_shape(out)
+        assert out["data_type"] == "metrics"
+        assert out["metrics"] == 3  # 3 metric groups seen
+        assert out["samples"] == 4  # 2+1+1 data points
         assert out["workouts"] == 0
+        assert out["unknown_formats"] == []
         assert out["sha256"] == sha(b)
-        assert out["archive_path"], "must report on-disk archive path"
 
     def test_valid_workout_payload_200_stored(self, client):
         b = body(make_workout_payload())
         res = client.post("/api/ingest", content=b, headers=HDR)
         assert res.status_code == 200
         out = res.json()
-        assert out["outcome"] == "stored"
+        assert_stored_shape(out)
+        assert out["data_type"] == "workouts"
+        assert out["metrics"] == 0
+        assert out["samples"] == 0
         assert out["workouts"] == 1
+        assert out["unknown_formats"] == []
+        assert out["sha256"] == sha(b)
 
     def test_payload_archived_verbatim_on_disk(self, client, tmp_path):
         b = body(make_metrics_payload())
@@ -180,27 +229,37 @@ class TestFailureSemantics:
         assert res.status_code == 401
 
     def test_wrong_token_401_and_audited_body_not_archived(self, client, tmp_path):
-        res = client.post("/api/ingest", content=body(make_metrics_payload()),
-                          headers={"X-Ingest-Token": "wrong"})
+        res = client.post(
+            "/api/ingest", content=body(make_metrics_payload()), headers={"X-Ingest-Token": "wrong"}
+        )
         assert res.status_code == 401
-        assert not list((tmp_path / "archive").rglob("*")), \
-            "untrusted body must NOT be archived"
+        assert not list((tmp_path / "archive").rglob("*")), "untrusted body must NOT be archived"
         # audit exists and carries no token material
         audit = client.get("/api/ingest/stats", headers=HDR).json()
         assert audit["unauthorized_attempts"] == 1
 
-    def test_malformed_json_400_quarantined(self, client, tmp_path):
-        res = client.post("/api/ingest", content=b"{broken",
-                          headers=HDR)
+    def test_malformed_json_400_quarantined_with_error_note(self, client, tmp_path):
+        res = client.post("/api/ingest", content=b"{broken", headers=HDR)
         assert res.status_code == 400
-        assert res.json()["quarantine"]
-        q = list((tmp_path / "archive" / "quarantine").rglob("*"))
+        quarantine_id = res.json()["quarantine"]
+        assert quarantine_id
+        qdir = tmp_path / "archive" / "quarantine"
+        q = list(qdir.rglob("*.json"))
         assert len(q) == 1, "malformed payload archived to quarantine/"
+        assert quarantine_id.endswith(q[0].name), "quarantine id locates the exact file"
+        # Spec failure table: an error note is stored alongside the
+        # quarantined payload (sidecar, reason text only).
+        note = q[0].with_name(q[0].stem + ".error.txt")
+        assert note.is_file(), "error-note sidecar must exist beside the quarantined payload"
+        assert note.read_text().strip(), "sidecar carries the parser's reason"
+        assert b"{broken" not in note.read_bytes(), "sidecar never echoes body content"
 
-    def test_wrong_shape_400_quarantined(self, client):
-        res = client.post("/api/ingest", content=json.dumps({"nope": 1}).encode(),
-                          headers=HDR)
+    def test_wrong_shape_400_quarantined_with_error_note(self, client, tmp_path):
+        res = client.post("/api/ingest", content=json.dumps({"nope": 1}).encode(), headers=HDR)
         assert res.status_code == 400
+        q = list((tmp_path / "archive" / "quarantine").rglob("*.json"))
+        assert len(q) == 1
+        assert q[0].with_name(q[0].stem + ".error.txt").is_file()
 
     def test_duplicate_repost_idempotent_200(self, client):
         b = body(make_metrics_payload())
@@ -215,6 +274,7 @@ class TestFailureSemantics:
 
     def test_oversized_413_not_archived(self, client, tmp_path, monkeypatch):
         import health_db.config as config
+
         monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 1024)
         big = b"x" * 2048
         res = client.post("/api/ingest", content=big, headers=HDR)
@@ -241,8 +301,9 @@ class TestArchiveFirstNeverLosesPayload:
 
 class TestNoSecretLeakage:
     def test_401_response_carries_no_secret(self, client):
-        res = client.post("/api/ingest", content=body(make_metrics_payload()),
-                          headers={"X-Ingest-Token": "wrong"})
+        res = client.post(
+            "/api/ingest", content=body(make_metrics_payload()), headers={"X-Ingest-Token": "wrong"}
+        )
         assert "test-secret-token" not in res.text
 
     def test_stats_carries_no_secret(self, client):
@@ -257,12 +318,221 @@ class TestNoSecretLeakage:
 
 class TestUnknownMetricAccepted:
     def test_unknown_metric_reported_as_accepted(self, client):
-        payload = {"data": {"metrics": [
-            {"name": "some_future_metric", "units": "count",
-             "data": [{"qty": 3, "date": "2026-09-08 09:00:00 +0900"}]},
-        ], "workouts": []}}
+        payload = {
+            "data": {
+                "metrics": [
+                    {
+                        "name": "some_future_metric",
+                        "units": "count",
+                        "data": [{"qty": 3, "date": "2026-09-08 09:00:00 +0900"}],
+                    },
+                ],
+                "workouts": [],
+            }
+        }
         res = client.post("/api/ingest", content=body(payload), headers=HDR)
         assert res.status_code == 200
         out = res.json()
-        assert out["outcome"] == "stored"
+        assert_stored_shape(out)
         assert out["metrics"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression (code_critic product_bug, retry #4): restart-restored archive
+# must dedupe — the duplicate gate consults the persistent disk index, not
+# just the in-memory seen() set (anti-scenario 1: no double counts ever).
+# ---------------------------------------------------------------------------
+
+
+class TestRestartRestoredArchiveDedupes:
+    """Fresh app instance (simulated service restart) against the SAME
+    archive dir: re-posting identical bytes must return the idempotent
+    ``{"outcome": "duplicate"}`` and stats must show duplicate=1 / stored
+    unchanged — the disk archive is the source of truth across restarts."""
+
+    def test_repost_identical_bytes_after_restart_is_duplicate(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import health_db.config as config
+        import health_db.main as main_mod
+
+        monkeypatch.setattr(config, "ARCHIVE_ROOT", tmp_path / "archive")
+        monkeypatch.setattr(config, "INGEST_SECRET", "test-secret-token")
+        monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
+        monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
+
+        b = body(make_metrics_payload())
+        archived_before = None
+
+        # "Process 1": store the payload.
+        with TestClient(main_mod.app) as first:
+            res = first.post("/api/ingest", content=b, headers=HDR)
+            assert res.status_code == 200
+            assert res.json()["outcome"] == "stored"
+            archived_before = res.json()["archive_path"]
+            stats1 = first.get("/api/ingest/stats", headers=HDR).json()
+            assert stats1["stored"] == 1 and stats1["duplicate"] == 0
+
+        # "Process 2" (restart): a brand-new app instance — fresh in-memory
+        # stats/audit/archive state — pointed at the same archive dir.
+        with TestClient(main_mod.app) as restarted:
+            repost = restarted.post("/api/ingest", content=b, headers=HDR)
+            assert repost.status_code == 200
+            out = repost.json()
+            assert out["outcome"] == "duplicate", (
+                "restart-restored archive must dedupe re-posted identical bytes"
+            )
+            assert out["sha256"] == sha(b)
+
+            # Stats of the new process: the repost counted as duplicate,
+            # stored unchanged (no double-count into the fresh counters).
+            stats2 = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert stats2["duplicate"] == 1
+            assert stats2["stored"] == 0, "re-post must not bump stored after restart"
+            assert stats2["received"] == 1
+
+            # Disk integrity: no second copy was written.
+            stored_files = [
+                p for p in (tmp_path / "archive").rglob("*.json") if "quarantine" not in p.parts
+            ]
+            assert len(stored_files) == 1
+            assert stored_files[0].read_bytes() == b
+            assert str(stored_files[0]) == archived_before, (
+                "the original archive path survives the restart untouched"
+            )
+
+            # A *different* payload in the restarted process stores normally.
+            other = body(make_workout_payload())
+            res3 = restarted.post("/api/ingest", content=other, headers=HDR)
+            assert res3.status_code == 200
+            assert res3.json()["outcome"] == "stored"
+            final = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert final["stored"] == 1 and final["duplicate"] == 1
+
+    def test_repost_of_foreign_named_archived_payload_is_duplicate(self, tmp_path, monkeypatch):
+        """Restart + re-post where the archived file does not follow the
+        dated naming convention (operator-copied corpus): the disk scan
+        content-indexes it, so the re-post is still a duplicate."""
+        from fastapi.testclient import TestClient
+
+        import health_db.config as config
+        import health_db.main as main_mod
+
+        monkeypatch.setattr(config, "ARCHIVE_ROOT", tmp_path / "archive")
+        monkeypatch.setattr(config, "INGEST_SECRET", "test-secret-token")
+        monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
+        monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
+
+        b = body(make_metrics_payload())
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir(parents=True)
+        foreign = archive_dir / "hand-placed.json"
+        foreign.write_bytes(b)
+
+        with TestClient(main_mod.app) as restarted:
+            repost = restarted.post("/api/ingest", content=b, headers=HDR)
+            assert repost.status_code == 200
+            assert repost.json()["outcome"] == "duplicate"
+            stats = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert stats["duplicate"] == 1 and stats["stored"] == 0
+            files = [p for p in (tmp_path / "archive").rglob("*.json")]
+            assert files == [foreign], "no second copy of the foreign-named payload"
+
+    def test_new_payload_after_restart_stores_normally(self, tmp_path, monkeypatch):
+        """The disk-backed gate must not over-dedupe: a payload whose bytes
+        were never archived stores normally after a restart."""
+        from fastapi.testclient import TestClient
+
+        import health_db.config as config
+        import health_db.main as main_mod
+
+        monkeypatch.setattr(config, "ARCHIVE_ROOT", tmp_path / "archive")
+        monkeypatch.setattr(config, "INGEST_SECRET", "test-secret-token")
+        monkeypatch.setattr(config, "INGEST_HEADER", "X-Ingest-Token")
+        monkeypatch.setattr(config, "MAX_PAYLOAD_BYTES", 64 * 1024 * 1024)
+
+        b = body(make_metrics_payload())
+        with TestClient(main_mod.app) as restarted:
+            res = restarted.post("/api/ingest", content=b, headers=HDR)
+            assert res.status_code == 200
+            assert res.json()["outcome"] == "stored"
+            stats = restarted.get("/api/ingest/stats", headers=HDR).json()
+            assert stats["stored"] == 1 and stats["duplicate"] == 0
+
+
+# ---------------------------------------------------------------------------
+# HAE automation headers → stats.last_automation wiring (spec §API Endpoints)
+# ---------------------------------------------------------------------------
+
+
+class TestAutomationHeadersToStats:
+    def test_automation_headers_flow_to_stats_last_automation(self, client):
+        """POST with the HAE automation headers → GET /api/ingest/stats
+        (authed) reports last_automation reflecting automation-name."""
+        headers = {
+            **HDR,
+            "automation-name": "metrics-all",
+            "automation-id": "B14E8EA2-9C43-4FBB-9BC1-A5C57D0D2B4F",
+            "session-id": "e5f6a7b8-c9d0-4e1f-a2b3-4c5d6e7f8a90",
+        }
+        res = client.post("/api/ingest", content=body(make_metrics_payload()), headers=headers)
+        assert res.status_code == 200
+        assert res.json()["outcome"] == "stored"
+
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert stats["last_automation"] is not None
+        assert "automation-name=metrics-all" in stats["last_automation"]
+        assert "automation-id=B14E8EA2-9C43-4FBB-9BC1-A5C57D0D2B4F" in stats["last_automation"]
+        assert "session-id=e5f6a7b8-c9d0-4e1f-a2b3-4c5d6e7f8a90" in stats["last_automation"]
+
+    def test_second_automation_overwrites_last_automation(self, client):
+        """The most recent labeled payload wins (hourly automations differ)."""
+        client.post(
+            "/api/ingest",
+            content=body(make_metrics_payload()),
+            headers={**HDR, "automation-name": "metrics-all"},
+        )
+        client.post(
+            "/api/ingest",
+            content=body(make_workout_payload()),
+            headers={**HDR, "automation-name": "workouts"},
+        )
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert "automation-name=workouts" in stats["last_automation"]
+        assert "automation-name=metrics-all" not in stats["last_automation"]
+
+    def test_missing_automation_headers_leave_last_automation_unchanged(self, client):
+        """A later payload without automation headers must NOT clear or
+        replace the previous label (stats contract: label kept, not reset)."""
+        client.post(
+            "/api/ingest",
+            content=body(make_metrics_payload()),
+            headers={**HDR, "automation-name": "metrics-hr-steps"},
+        )
+        before = client.get("/api/ingest/stats", headers=HDR).json()["last_automation"]
+        assert before is not None
+
+        res = client.post("/api/ingest", content=body(make_workout_payload()), headers=HDR)
+        assert res.status_code == 200
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert stats["last_automation"] == before, (
+            "unlabeled payload keeps the previous last_automation"
+        )
+
+    def test_no_automation_headers_ever_last_automation_stays_none(self, client):
+        """Without any labeled payload, last_automation stays None."""
+        res = client.post("/api/ingest", content=body(make_metrics_payload()), headers=HDR)
+        assert res.status_code == 200
+        stats = client.get("/api/ingest/stats", headers=HDR).json()
+        assert stats["last_automation"] is None
+        assert stats["received"] == 1 and stats["stored"] == 1
+
+    def test_partial_automation_headers_label_only_present_ones(self, client):
+        """Only present headers contribute to the label (fixed order k=v)."""
+        client.post(
+            "/api/ingest",
+            content=body(make_metrics_payload()),
+            headers={**HDR, "automation-name": "workouts", "session-id": "s-123"},
+        )
+        label = client.get("/api/ingest/stats", headers=HDR).json()["last_automation"]
+        assert label == "automation-name=workouts; session-id=s-123"
