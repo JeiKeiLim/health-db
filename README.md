@@ -71,39 +71,61 @@ tools use.
 
 ## Deployment (Docker server)
 
-Prerequisites: an existing postgres:18 container on the host, on a Docker network
-(referred to below as `health-net`), with db/role `health_app` created.
+Target: Docker **Docker** (the host OS, x86 models only — ARM units like the
+ARM model cannot run Docker). Prerequisites: an existing postgres:18 container on
+the hostwith db/role `health_app` created and its port published on the host (e.g. 5432).
 
-1. **Prepare `.env`** (gitignored — never commit):
+1. **Get the repo onto the host** at `health-db` (git clone over SSH, or
+   upload the working tree with file manager).
+
+2. **Prepare `.env`** (gitignored — never commit) *next to `docker-compose.yml` in that
+   folder*. Docker reads it under that exact dotted name (enable hidden files
+   in file manager if you can't see it):
    ```
    PSQL_USER=health_app
    PSQL_TABLE=health_app
    PSQL_PASSWORD=<postgres password>
-   PSQL_URL=<postgres container name on the shared network>   # e.g. postgres, not an external hostname
-   PSQL_PORT=5432
+   PSQL_URL=< LAN IP or hostname>       # e.g. 203.0.113.10 — NOT a container name
+   PSQL_PORT=5432                          # the postgres container's published host port
    INGEST_SECRET=$(openssl rand -hex 32)
    INGEST_HEADER=X-Ingest-Token
    MAX_PAYLOAD_BYTES=67108864
    ```
    See `.env.example` for the full key reference (`PSQL_URL` is the **host**;
    `PSQL_TABLE` is the **database name** — HAE's odd key name is preserved for parity).
+   Keep `env_file` in the simple list form in `docker-compose.yml`: Docker
+   ships Compose v2.20, which rejects the extended `path:`/`required:` syntax.
 
-2. **Build and run** on the host(Docker → Project, or shell):
+3. **Create the archive folder** (Docker never creates bind-mount folders, and
+   the image runs as UID 10001, not your the host OS user):
    ```sh
-   docker build -t health-db:latest .
-   docker compose -f docker-compose.server.yml up -d
+   sudo mkdir -p health-db/data
+   sudo chown -R 10001:10001 health-db/data
    ```
-   The compose file expects `health-net` as an **external** network (edit to match your
-   postgres container's network). The container runs migrations at startup
-   (`health-migrate` → `migrations/0001_init.sql`), then serves ingest on :8000 and MCP
-   on :8100. The verbatim archive lives in the `health-data` volume and survives
-   container recreation.
 
-3. **Verify**:
+4. **Create the Project**: Docker → **Project → Create** → name `health-db`,
+   path `health-db` (the wizard auto-detects `docker-compose.yml`) →
+   Done. Docker builds the image on the host(no cross-architecture image
+   transfer needed), then the entrypoint runs migrations at startup
+   (`health-migrate` → `migrations/0001_init.sql`) and serves ingest on :8000 and MCP on
+   :8100. The verbatim archive lives in `health-db/data` and survives
+   container recreation (and shows up in host backups, unlike a named volume in
+   `var/lib/docker`).
+
+   Rebuild after config changes: Project → **Build** (don't delete the project). Watch
+   startup in Container → health-db → Details → Log.
+
+5. **Verify**:
    ```sh
    curl http://<server>:8000/api/health                      # {"status":"ok",...}
    curl -H "X-Ingest-Token: $INGEST_SECRET" http://<server>:8000/api/ingest/stats
    ```
+
+Shell alternative (same image, bypasses Docker; run as root):
+```sh
+cd health-db
+sudo docker compose up -d --build
+```
 
 Local dev variant: `docker compose -f docker-compose.local.yml up --build` — spins up a
 disposable postgres:18 plus the service with the same image.
@@ -213,7 +235,7 @@ database. Slice-1 captured real payloads in `data/archive/` are the canonical fi
 
 | Key | Meaning | Default |
 |---|---|---|
-| `PSQL_URL` | postgres **host** (container name on the hostnetwork) | `localhost` |
+| `PSQL_URL` | postgres **host** ( LAN IP/hostname, or `postgres` service name in local compose) | `localhost` |
 | `PSQL_PORT` | postgres port | `5432` |
 | `PSQL_USER` | role name | `health_app` |
 | `PSQL_TABLE` | database **name** (HAE parity naming) | `health_app` |

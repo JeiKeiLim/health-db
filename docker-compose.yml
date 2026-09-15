@@ -1,0 +1,47 @@
+# Docker self-hosted deployment — Docker Project file.
+#
+# Docker -> Project -> Create, path health-db
+# (it auto-detects this exact filename). CM runs the build on the host, so
+# there is no cross-architecture image transfer.
+#
+# .env must sit next to this file (same folder) and is read as-is.
+#
+# One-time setup on the host(CM never creates mount folders, and the image
+# runs as UID 10001, not your the host OS user):
+#   sudo mkdir -p health-db/data
+#   sudo chown -R 10001:10001 health-db/data
+#
+# PSQL_* comes from .env. PSQL_URL is the LAN IP (or its hostname) and
+# PSQL_PORT is the published postgres port — the DB container is reached
+# over the host, so no shared Docker network is required.
+services:
+  health-db:
+    build: .
+    image: health-db:latest
+    container_name: health-db
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8100
+    ports:
+      - "8000:8000" # ingest (HAE automations + Manual Export)
+      - "8100:8100" # MCP streamable-http
+    volumes:
+      # Absolute path is required by Docker (relative ./ mounts
+      # are unreliable). Must exist on the hostbefore the first build.
+      - health-db/data:/app/data # verbatim archive + pending queue (iron law 2)
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
