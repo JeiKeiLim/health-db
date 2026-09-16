@@ -75,26 +75,15 @@ Target: Docker **Docker** (the host OS, x86 models only — ARM units like the
 ARM model cannot run Docker). Prerequisites: an existing postgres:18 container on
 the hostwith db/role `health_app` created and its port published on the host (e.g. 5432).
 
-**Why the image is built on a dev machine, not the host:** Docker's Image Import
-accepts only *built image tarballs* — pointing it at a source folder (or a bare Dockerfile)
-is refused, and its Projects only pull/deploy images; they don't compile a Dockerfile from
-the project folder. So the flow is: build → `docker save` → import the tar. Build for the
- hostarchitecture (`linux/amd64`) even on Apple Silicon; the hostcannot run an arm64 image.
+The image is **built on the hostover SSH** (`sudo docker build`) — Docker and
+the shell share one Docker daemon, so the image lands in the Image list and the Project
+can use it. Docker's own Image Import only accepts built image tarballs, and
+its Projects don't compile a Dockerfile, so those aren't needed for this flow.
 
-1. **On the dev machine**, build and export the image:
-   ```sh
-   docker buildx build --platform linux/amd64 -t health-db:latest --load .
-   docker save health-db:latest -o health-db-amd64.tar
-   ```
+1. **Get the repo onto the host** at `health-db` (git clone over SSH, or
+   upload the working tree with file manager).
 
-2. **Get the repo and the tar onto the host** at `health-db` (git clone over
-   SSH or file manager; the tar can live anywhere, e.g. the same folder).
-
-3. **Import the image**: Docker → **Image → Add → Add from file** → select
-   `health-db-amd64.tar`. Shell equivalent: `sudo docker load < health-db-amd64.tar`.
-   The image must appear in the image list *before* the project starts.
-
-4. **Prepare `.env`** (gitignored — never commit) *next to `docker-compose.yml` in that
+2. **Prepare `.env`** (gitignored — never commit) *next to `docker-compose.yml` in that
    folder*. Docker reads it under that exact dotted name (enable hidden files
    in file manager if you can't see it):
    ```
@@ -112,30 +101,40 @@ the project folder. So the flow is: build → `docker save` → import the tar. 
    Keep `env_file` in the simple list form in `docker-compose.yml`: Docker
    ships Compose v2.20, which rejects the extended `path:`/`required:` syntax.
 
-5. **Create the archive folder** (Docker never creates bind-mount folders, and
+3. **Create the archive folder** (Docker never creates bind-mount folders, and
    the image runs as UID 10001, not your the host OS user):
    ```sh
    sudo mkdir -p health-db/data
    sudo chown -R 10001:10001 health-db/data
    ```
 
-6. **Create the Project**: Docker → **Project → Create** → name `health-db`,
-   path `health-db` (the wizard picks up `docker-compose.yml`). The
-   entrypoint runs migrations at startup (`health-migrate` → `migrations/0001_init.sql`),
-   then serves ingest on :8000 and MCP on :8100. The verbatim archive lives in
-   `health-db/data` and survives container recreation (and shows up in
-   host backups, unlike a named volume in `var/lib/docker`).
+4. **Build the image on the host** (SSH in first; this can take a while on hostCPUs):
+   ```sh
+   cd health-db
+   sudo docker build -t health-db:latest .
+   ```
+   `.dockerignore` keeps `.git`, `.env`, `data/`, `.tenet/` etc. out of the build context,
+   so no health data or secrets end up in the image. Verify the image appears in
+   Docker → **Image**.
 
-   To ship code changes: rebuild + re-save + re-import the tar, then Project → **Build**
+5. **Create the Project**: Docker → **Project → Create** → name `health-db`,
+   path `health-db` (the wizard picks up `docker-compose.yml`, which
+   references `health-db:latest`). The entrypoint runs migrations at startup
+   (`health-migrate` → `migrations/0001_init.sql`), then serves ingest on :8000 and MCP
+   on :8100. The verbatim archive lives in `health-db/data` and survives
+   container recreation (and shows up in host backups, unlike a named volume in
+   `var/lib/docker`).
+
+   To ship code changes: `git pull`, rebuild with step 4, then Project → **Build**
    (don't delete the project). Watch startup in Container → health-db → Details → Log.
 
-7. **Verify**:
+6. **Verify**:
    ```sh
    curl http://<server>:8000/api/health                      # {"status":"ok",...}
    curl -H "X-Ingest-Token: $INGEST_SECRET" http://<server>:8000/api/ingest/stats
    ```
 
-Shell alternative (bypasses Docker entirely; runs as root, no tar round-trip):
+Shell alternative (same build, runs the stack without Docker Project tracking):
 ```sh
 cd health-db
 sudo docker compose up -d --build

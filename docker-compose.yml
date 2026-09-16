@@ -1,29 +1,23 @@
 # Docker self-hosted deployment — Docker Project file.
 #
-# Docker's Image Import accepts only *built image tarballs* (a
-# source folder is refused), so this compose file references a pre-built
-# image — no `build:` here. Build the image for the hostarchitecture on a
-# dev machine, then import it:
+# Build the image ON THE host(no cross-machine image transfer). SSH into the
+# hostand run, in this folder:
+#     sudo docker build -t health-db:latest .
+# The image then shows up in Docker -> Image, so the Project below
+# can start it (Docker's Import only takes built tarballs, and
+# Projects expect the image to already exist).
 #
-#   docker buildx build --platform linux/amd64 -t health-db:latest --load .
-#   docker save health-db:latest -o health-db-amd64.tar
-#   -> transfer the tar, then Docker -> Image -> Add -> Add from file
-#      (shell equivalent: sudo docker load < health-db-amd64.tar)
-#
-# Only then: Docker -> Project -> Create, name health-db, path
-# health-db (the wizard picks up this file). The image must
-# be in Docker's image list before the project starts.
+# Then: Docker -> Project -> Create, name health-db, path
+# health-db (the wizard picks up this file).
 #
 # .env must sit next to this file (same folder) and is read as-is.
 #
-# One-time setup on the host(CM never creates mount folders, and the image
-# runs as UID 10001, not your the host OS user):
+# One-time setup on the host:
 #   sudo mkdir -p health-db/data
 #   sudo chown -R 10001:10001 health-db/data
 #
 # PSQL_* comes from .env. PSQL_URL is the LAN IP (or its hostname) and
-# PSQL_PORT is the published postgres port — the DB container is reached
-# over the host, so no shared Docker network is required.
+# PSQL_PORT is the published postgres port.
 services:
   health-db:
     image: health-db:latest
@@ -39,8 +33,6 @@ services:
       - "8000:8000" # ingest (HAE automations + Manual Export)
       - "8100:8100" # MCP streamable-http
     volumes:
-      # Absolute path is required by Docker (relative ./ mounts
-      # are unreliable). Must exist on the hostbefore the first build.
       - health-db/data:/app/data # verbatim archive + pending queue (iron law 2)
     healthcheck:
       test:
