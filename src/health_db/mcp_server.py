@@ -55,6 +55,7 @@ import os
 from typing import Annotated
 
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
@@ -69,9 +70,22 @@ ALL_METRICS = Annotated[str, Field(description="metric name; empty = all metrics
 # --- Env keys (documented in .env.example + README) ---
 ENV_MCP_PORT = "MCP_PORT"
 ENV_MCP_HOST = "MCP_HOST"
+ENV_MCP_ALLOWED_HOSTS = "MCP_ALLOWED_HOSTS"
 
 DEFAULT_MCP_HOST = "0.0.0.0"
 DEFAULT_MCP_PORT = 8100
+# Host patterns the SDK's DNS-rebinding protection accepts by default. These
+# match the SDK's own localhost allowlist; anything beyond ( hosthostname,
+# reverse-proxy host:port) must be added via MCP_ALLOWED_HOSTS.
+DEFAULT_MCP_ALLOWED_HOSTS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+# Origin patterns (browser cross-origin requests). Non-browser MCP clients
+# send no Origin header, which the SDK always accepts; these keep parity with
+# the SDK's localhost defaults that the old `host=` shorthand installed.
+DEFAULT_MCP_ALLOWED_ORIGINS = (
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+)
 MCP_PATH = "/mcp"
 
 MCP_SERVER_NAME = "health-db"
@@ -100,6 +114,20 @@ def mcp_port(environ: dict[str, str] | None = None) -> int:
     """MCP bind port (``MCP_PORT``, default 8100; invalid → default)."""
     source = dict(os.environ if environ is None else environ)
     return _int_env(source, ENV_MCP_PORT, DEFAULT_MCP_PORT)
+
+
+def mcp_allowed_hosts(environ: dict[str, str] | None = None) -> list[str]:
+    """Host-header allowlist for the MCP transport (``MCP_ALLOWED_HOSTS``).
+
+    Comma-separated, whitespace-trimmed; blank entries dropped. The defaults
+    are the SDK's localhost patterns; entries here are ADDED to them, so a
+    hosthostname or reverse-proxy host:port (e.g. ``healthbox.example:8443``) can be
+    reached without weakening the localhost defaults. SDK pattern support:
+    exact match, or ``base:*`` to accept any port on ``base``.
+    """
+    source = dict(os.environ if environ is None else environ)
+    extra = [part.strip() for part in source.get(ENV_MCP_ALLOWED_HOSTS, "").split(",")]
+    return [*DEFAULT_MCP_ALLOWED_HOSTS, *(part for part in extra if part)]
 
 
 def bearer_ok(header_value: str | None, expected_secret: str | None) -> bool:
@@ -391,16 +419,25 @@ def mcp_asgi_app(pool: object | None = None) -> Starlette:
     ``json_response=True`` (single JSON body per request — no SSE stream,
     proxy-friendly) and ``stateless_http=True`` (fresh transport per request,
     no session state) per research/mcp-python-sdk.md; both verified in-slice
-    against the official SDK ``Client`` over real HTTP. Host ``127.0.0.1``
-    is passed so the SDK's built-in localhost DNS-rebinding protection is
-    configured with the matching allowlist (the uvicorn bind host is
-    ``config.HOST``/``MCP_HOST`` and may be 0.0.0.0 on the host).
+    against the official SDK ``Client`` over real HTTP.
+
+    DNS-rebinding protection is passed explicitly instead of relying on the
+    SDK's ``host="127.0.0.1"`` shorthand: that shorthand hard-codes a
+    localhost-only Host allowlist, so every request through a reverse proxy
+    or via a hosthostname got ``421 Invalid Host header`` before auth ran.
+    The allowlist is ``mcp_allowed_hosts()`` — the localhost patterns plus
+    anything in ``MCP_ALLOWED_HOSTS``; protection stays ON, and the Bearer
+    middleware remains the actual access control.
     """
     inner = build_mcp_server(pool).streamable_http_app(
         streamable_http_path=MCP_PATH,
         json_response=True,
         stateless_http=True,
-        host="127.0.0.1",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=mcp_allowed_hosts(),
+            allowed_origins=list(DEFAULT_MCP_ALLOWED_ORIGINS),
+        ),
     )
     inner.add_middleware(BearerAuthMiddleware)
     return inner

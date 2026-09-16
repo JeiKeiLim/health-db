@@ -227,6 +227,15 @@ reads only from the on-disk archive, so it is safe on the host.
 MCP endpoint: `http://<server>:8100/mcp` (streamable-http), auth
 `Authorization: Bearer <INGEST_SECRET>` (same secret as ingest).
 
+**When clients reach MCP by a name other than localhost** ( hosthostname, or a
+Docker reverse-proxy host:port), set `MCP_ALLOWED_HOSTS` in `.env` — a
+comma-separated list of Host values, e.g. `healthbox.example:8443,healthbox.example`. The MCP
+transport validates the `Host` header (DNS-rebinding protection) against a
+localhost-only default allowlist; an unlisted name is rejected with
+`421 Invalid Host header`. `base:*` wildcards are supported (any port on
+`base`). The Bearer check remains the access control — this list only decides
+which hostnames may reach it.
+
 Example client config (Claude Desktop / any streamable-http MCP client):
 
 ```json
@@ -275,6 +284,7 @@ database. Slice-1 captured real payloads in `data/archive/` are the canonical fi
 | `MAX_PAYLOAD_BYTES` | 413 threshold | `67108864` (64 MiB) |
 | `HOST` / `PORT` | ingest bind | `0.0.0.0:8000` |
 | `MCP_HOST` / `MCP_PORT` | MCP bind | `0.0.0.0:8100` |
+| `MCP_ALLOWED_HOSTS` | extra Host-header names for MCP (reverse proxy/server), comma-separated | localhost only |
 
 Out of scope (later manual steps): TLS termination / port forwarding behind the Docker
 reverse proxy; analysis features; predecessor decommission.

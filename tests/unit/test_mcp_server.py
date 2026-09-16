@@ -67,6 +67,31 @@ class TestMcpPort:
         assert mcp_port({"MCP_PORT": "  "}) == 8100
 
 
+class TestMcpAllowedHosts:
+    def test_defaults_are_localhost_only(self):
+        assert mcp_server.mcp_allowed_hosts({}) == [
+            "127.0.0.1:*",
+            "localhost:*",
+            "[::1]:*",
+        ]
+
+    def test_extra_hosts_are_appended(self):
+        hosts = mcp_server.mcp_allowed_hosts({"MCP_ALLOWED_HOSTS": "healthbox.example:8443"})
+        assert hosts[-1] == "healthbox.example:8443"
+        assert "127.0.0.1:*" in hosts
+
+    def test_multiple_hosts_split_and_trimmed(self):
+        hosts = mcp_server.mcp_allowed_hosts({"MCP_ALLOWED_HOSTS": "healthbox.example:8443, server.local ,,"})
+        assert hosts[-2:] == ["healthbox.example:8443", "server.local"]
+
+    def test_blank_entries_dropped(self):
+        assert mcp_server.mcp_allowed_hosts({"MCP_ALLOWED_HOSTS": " , "}) == [
+            "127.0.0.1:*",
+            "localhost:*",
+            "[::1]:*",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # build_mcp_server: 8 tools + 3 resources, guarded errors
 # ---------------------------------------------------------------------------
@@ -303,3 +328,58 @@ class TestMcpAsgiApp:
 
     def test_mcp_path_constant(self):
         assert mcp_server.MCP_PATH == "/mcp"
+
+
+class TestMcpHostHeader:
+    """DNS-rebinding allowlist: non-localhost Hosts must reach the MCP layer.
+
+    Regression for the host/reverse-proxy deployment: the old ``host=
+    "127.0.0.1"`` shorthand installed a localhost-only allowlist, so
+    ``Host: healthbox.example:8443`` was rejected with 421 *after* a valid Bearer
+    check. TestClient's default Host is ``testserver``, which stands in for
+    that proxy hostname; these tests send a valid token so the Bearer
+    middleware passes and the SDK's host validation is what decides.
+    """
+
+    TOKEN = "tok-host-test"
+
+    def _post(self, app, host: str) -> int:
+        from starlette.testclient import TestClient
+
+        # Context-managed so the MCP session manager's lifespan runs.
+        with TestClient(app) as client:
+            res = client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                headers={
+                    "Host": host,
+                    "Authorization": f"Bearer {self.TOKEN}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+            )
+            return res.status_code
+
+    def test_unlisted_host_rejected_with_421(self, monkeypatch):
+        import health_db.config as config
+
+        monkeypatch.setattr(config, "INGEST_SECRET", self.TOKEN)
+        app = mcp_server.mcp_asgi_app(pool=_FakePool())
+        assert self._post(app, "testserver") == 421
+
+    def test_allowlisted_host_passes_host_check(self, monkeypatch):
+        import health_db.config as config
+
+        monkeypatch.setattr(config, "INGEST_SECRET", self.TOKEN)
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "testserver")
+        app = mcp_server.mcp_asgi_app(pool=_FakePool())
+        status = self._post(app, "testserver")
+        # 401 would mean auth failed; 421 would mean the host was rejected.
+        assert status not in (401, 421)
+
+    def test_localhost_host_accepted_by_default(self, monkeypatch):
+        import health_db.config as config
+
+        monkeypatch.setattr(config, "INGEST_SECRET", self.TOKEN)
+        app = mcp_server.mcp_asgi_app(pool=_FakePool())
+        assert self._post(app, "localhost:8100") not in (401, 421)
