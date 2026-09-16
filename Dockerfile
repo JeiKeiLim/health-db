@@ -45,7 +45,8 @@ ENV PSQL_URL="" \
     HOST="0.0.0.0" \
     PORT="8000" \
     MCP_HOST="0.0.0.0" \
-    MCP_PORT="8100"
+    MCP_PORT="8100" \
+    MCP_ALLOWED_HOSTS=""
 
 # Non-root runtime user; data/ (verbatim archive + pending queue) must be a
 # writable volume mount — the archive is iron law 2 and must survive
