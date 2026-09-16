@@ -101,6 +101,16 @@ its Projects don't compile a Dockerfile, so those aren't needed for this flow.
    Keep `env_file` in the simple list form in `docker-compose.yml`: Docker
    ships Compose v2.20, which rejects the extended `path:`/`required:` syntax.
 
+   **How env vars reach the app** (they are never baked into the image — image layers
+   are readable by anyone with the image): the image declares every key with an empty
+   default so Docker's create-container wizard lists them and `docker inspect`
+   documents them; the real values are injected at container start, either from `.env`
+   via the compose `env_file` (the Project path above) or typed into the wizard's
+   Environment tab (standalone-container path). Both override the image defaults. Leaving
+   `INGEST_SECRET`/`PSQL_*` blank keeps the app fail-closed: every ingest/MCP request is
+   401'd until a real secret is supplied, and the health probe never dials ambient
+   `localhost:5432`.
+
 3. **Create the archive folder** (Docker never creates bind-mount folders, and
    the image runs as UID 10001, not your the host OS user):
    ```sh
@@ -127,6 +137,13 @@ its Projects don't compile a Dockerfile, so those aren't needed for this flow.
 
    To ship code changes: `git pull`, rebuild with step 4, then Project → **Build**
    (don't delete the project). Watch startup in Container → health-db → Details → Log.
+
+   *Alternative — standalone container instead of a Project:* Docker →
+   **Container → Create** from `health-db:latest`; the Environment tab lists every key
+   from the image declaration (step 2's layering) so you can type the values there.
+   Map 8000/8100, mount the same data folder, and add `restart: unless-stopped` via the
+   settings. Note the host OS won't let you edit a container's env after creation (duplicate-only),
+   which is why the Project + `.env` path is the documented default.
 
 6. **Verify**:
    ```sh

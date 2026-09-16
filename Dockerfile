@@ -1,6 +1,8 @@
+# check=skip=SecretsUsedInArgOrEnv
 # health-db single-service image: ingest (:8000) + MCP (:8100) + CLI tools.
-# Secrets are NEVER baked in — .env is provided at runtime via compose
-# env_file (iron law 1). Build: docker build -t health-db .
+# Secrets are NEVER baked in — values arrive as environment variables at
+# container start (.env via compose env_file for the Project path, or the
+# Docker wizard's Environment tab). Build: docker build -t health-db .
 
 FROM python:3.12-slim-bookworm
 
@@ -19,6 +21,31 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     MIGRATIONS_DIR=/app/migrations \
     ARCHIVE_ROOT=/app/data/archive \
     PENDING_DIR=/app/data/pending
+
+# Runtime configuration keys, declared so Docker's create-container
+# wizard lists them as editable fields and `docker inspect` documents them.
+# Values come at container start (.env via compose env_file, or typed into
+# the wizard) and override everything here — image layers are readable, so
+# never put real secrets below.
+#
+# PSQL_* and INGEST_SECRET are declared blank on purpose. Blank is what keeps
+# the app fail-closed: PSQL_* blank means "not configured" (the health probe
+# never dials an ambient localhost:5432), and a blank INGEST_SECRET rejects
+# every ingest/MCP request until a real secret is supplied. BuildKit's
+# SecretsUsedInArgOrEnv lint fires on the names — that is expected; the
+# values here are empty and the real ones are injected at runtime.
+ENV PSQL_URL="" \
+    PSQL_PORT="" \
+    PSQL_USER="" \
+    PSQL_TABLE="" \
+    PSQL_PASSWORD="" \
+    INGEST_SECRET="" \
+    INGEST_HEADER="X-Ingest-Token" \
+    MAX_PAYLOAD_BYTES="67108864" \
+    HOST="0.0.0.0" \
+    PORT="8000" \
+    MCP_HOST="0.0.0.0" \
+    MCP_PORT="8100"
 
 # Non-root runtime user; data/ (verbatim archive + pending queue) must be a
 # writable volume mount — the archive is iron law 2 and must survive
