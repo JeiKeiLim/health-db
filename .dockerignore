@@ -1,0 +1,18 @@
+# Keep health data, secrets, and dev files out of the docker build context.
+# (The Dockerfile only COPYs src/, migrations/, pyproject.toml, uv.lock.)
+.git
+.venv
+data
+.env
+.tenet
+backlog
+tests
+docker-compose.local.yml
+*.tar
+*.tar.gz
+.DS_Store
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache

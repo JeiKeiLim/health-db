@@ -75,10 +75,26 @@ Target: Docker **Docker** (the host OS, x86 models only — ARM units like the
 ARM model cannot run Docker). Prerequisites: an existing postgres:18 container on
 the hostwith db/role `health_app` created and its port published on the host (e.g. 5432).
 
-1. **Get the repo onto the host** at `health-db` (git clone over SSH, or
-   upload the working tree with file manager).
+**Why the image is built on a dev machine, not the host:** Docker's Image Import
+accepts only *built image tarballs* — pointing it at a source folder (or a bare Dockerfile)
+is refused, and its Projects only pull/deploy images; they don't compile a Dockerfile from
+the project folder. So the flow is: build → `docker save` → import the tar. Build for the
+ hostarchitecture (`linux/amd64`) even on Apple Silicon; the hostcannot run an arm64 image.
 
-2. **Prepare `.env`** (gitignored — never commit) *next to `docker-compose.yml` in that
+1. **On the dev machine**, build and export the image:
+   ```sh
+   docker buildx build --platform linux/amd64 -t health-db:latest --load .
+   docker save health-db:latest -o health-db-amd64.tar
+   ```
+
+2. **Get the repo and the tar onto the host** at `health-db` (git clone over
+   SSH or file manager; the tar can live anywhere, e.g. the same folder).
+
+3. **Import the image**: Docker → **Image → Add → Add from file** → select
+   `health-db-amd64.tar`. Shell equivalent: `sudo docker load < health-db-amd64.tar`.
+   The image must appear in the image list *before* the project starts.
+
+4. **Prepare `.env`** (gitignored — never commit) *next to `docker-compose.yml` in that
    folder*. Docker reads it under that exact dotted name (enable hidden files
    in file manager if you can't see it):
    ```
@@ -96,39 +112,37 @@ the hostwith db/role `health_app` created and its port published on the host (e.
    Keep `env_file` in the simple list form in `docker-compose.yml`: Docker
    ships Compose v2.20, which rejects the extended `path:`/`required:` syntax.
 
-3. **Create the archive folder** (Docker never creates bind-mount folders, and
+5. **Create the archive folder** (Docker never creates bind-mount folders, and
    the image runs as UID 10001, not your the host OS user):
    ```sh
    sudo mkdir -p health-db/data
    sudo chown -R 10001:10001 health-db/data
    ```
 
-4. **Create the Project**: Docker → **Project → Create** → name `health-db`,
-   path `health-db` (the wizard auto-detects `docker-compose.yml`) →
-   Done. Docker builds the image on the host(no cross-architecture image
-   transfer needed), then the entrypoint runs migrations at startup
-   (`health-migrate` → `migrations/0001_init.sql`) and serves ingest on :8000 and MCP on
-   :8100. The verbatim archive lives in `health-db/data` and survives
-   container recreation (and shows up in host backups, unlike a named volume in
-   `var/lib/docker`).
+6. **Create the Project**: Docker → **Project → Create** → name `health-db`,
+   path `health-db` (the wizard picks up `docker-compose.yml`). The
+   entrypoint runs migrations at startup (`health-migrate` → `migrations/0001_init.sql`),
+   then serves ingest on :8000 and MCP on :8100. The verbatim archive lives in
+   `health-db/data` and survives container recreation (and shows up in
+   host backups, unlike a named volume in `var/lib/docker`).
 
-   Rebuild after config changes: Project → **Build** (don't delete the project). Watch
-   startup in Container → health-db → Details → Log.
+   To ship code changes: rebuild + re-save + re-import the tar, then Project → **Build**
+   (don't delete the project). Watch startup in Container → health-db → Details → Log.
 
-5. **Verify**:
+7. **Verify**:
    ```sh
    curl http://<server>:8000/api/health                      # {"status":"ok",...}
    curl -H "X-Ingest-Token: $INGEST_SECRET" http://<server>:8000/api/ingest/stats
    ```
 
-Shell alternative (same image, bypasses Docker; run as root):
+Shell alternative (bypasses Docker entirely; runs as root, no tar round-trip):
 ```sh
 cd health-db
 sudo docker compose up -d --build
 ```
 
 Local dev variant: `docker compose -f docker-compose.local.yml up --build` — spins up a
-disposable postgres:18 plus the service with the same image.
+disposable postgres:18 plus the service, building the image from source.
 
 ## HAE app configuration (iPhone)
 

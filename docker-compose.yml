@@ -1,8 +1,18 @@
 # Docker self-hosted deployment — Docker Project file.
 #
-# Docker -> Project -> Create, path health-db
-# (it auto-detects this exact filename). CM runs the build on the host, so
-# there is no cross-architecture image transfer.
+# Docker's Image Import accepts only *built image tarballs* (a
+# source folder is refused), so this compose file references a pre-built
+# image — no `build:` here. Build the image for the hostarchitecture on a
+# dev machine, then import it:
+#
+#   docker buildx build --platform linux/amd64 -t health-db:latest --load .
+#   docker save health-db:latest -o health-db-amd64.tar
+#   -> transfer the tar, then Docker -> Image -> Add -> Add from file
+#      (shell equivalent: sudo docker load < health-db-amd64.tar)
+#
+# Only then: Docker -> Project -> Create, name health-db, path
+# health-db (the wizard picks up this file). The image must
+# be in Docker's image list before the project starts.
 #
 # .env must sit next to this file (same folder) and is read as-is.
 #
@@ -16,7 +26,6 @@
 # over the host, so no shared Docker network is required.
 services:
   health-db:
-    build: .
     image: health-db:latest
     container_name: health-db
     restart: unless-stopped
