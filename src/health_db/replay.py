@@ -149,8 +149,9 @@ def replay_dir(
     ``raw_ingest.sha256`` UNIQUE gate, each archived payload is re-normalized
     and re-upserted (latest-wins, so idempotent) so rows written by an older
     buggy normalizer are rewritten with the corrected values. It still reads
-    from the archive on disk (server-safe) and never deletes ``raw_ingest`` rows;
-    the audit row is updated in place with outcome ``'repaired'``.
+    from the archive on disk (no live-service interaction) and never deletes
+    ``raw_ingest`` rows; the audit row is updated in place with outcome
+    ``'repaired'``.
     """
     from health_db.db import pool as db_pool
 

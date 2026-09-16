@@ -4,15 +4,14 @@ Self-hosted Apple Health data platform: the **Health Auto Export (HAE)** iOS app
 JSON v2 exports to a FastAPI ingest service, which archives every payload verbatim
 (archive-first), normalizes it, and stores it in PostgreSQL. Queries are served by an
 MCP streamable-HTTP server (8 tools + 3 resources, Bearer auth) with a thin CLI wrapper
-for dev testing. Runs as a single Docker container on a Docker hostnext to an
-existing postgres:18 container.
+for dev testing. Runs as a single Docker container next to any PostgreSQL 18 instance.
 
 ```
 iPhone (HAE automations) ──POST /api/ingest──►  ingest :8000 ──► data/archive/ (verbatim, iron law)
-                                                    │                     │
-                                                    ▼                     ▼
-                                             PostgreSQL 18 ◄── health-replay (backfill / outage queue)
-                                                    │
+                                                     │                     │
+                                                     ▼                     ▼
+                                              PostgreSQL 18 ◄── health-replay (backfill / outage queue)
+                                                     │
 MCP clients (Claude, …) ──streamable-http :8100/mcp──► queries.py (shared read layer) ◄── health CLI
 ```
 
@@ -69,102 +68,93 @@ tools use.
 - **Rollups**: `daily_rollups` are recomputed per affected day inside the ingest
   transaction; queries read rollups (90-day series < 1 s).
 
-## Deployment (Docker server)
+## Deployment (Docker)
 
-Target: Docker **Docker** (the host OS, x86 models only — ARM units like the
-ARM model cannot run Docker). Prerequisites: an existing postgres:18 container on
-the hostwith db/role `health_app` created and its port published on the host (e.g. 5432).
+Target: a single service container next to any PostgreSQL 18 instance (docker, or
+anywhere reachable over TCP). Prerequisites: postgres running with db/role
+`health_app` created and its port reachable from the container.
 
-The image is **built on the hostover SSH** (`sudo docker build`) — Docker and
-the shell share one Docker daemon, so the image lands in the Image list and the Project
-can use it. Docker's own Image Import only accepts built image tarballs, and
-its Projects don't compile a Dockerfile, so those aren't needed for this flow.
+The image is self-contained (built with `uv`, runs as non-root UID 10001) and takes
+all configuration from environment variables — nothing is baked in.
 
-1. **Get the repo onto the host** at `health-db` (git clone over SSH, or
-   upload the working tree with file manager).
+1. **Build the image**:
+   ```sh
+   docker build -t health-db:latest .
+   ```
+   `.dockerignore` keeps `.git`, `.env`, `data/` etc. out of the build context, so no
+   health data or secrets end up in the image.
 
-2. **Prepare `.env`** (gitignored — never commit) *next to `docker-compose.yml` in that
-   folder*. Docker reads it under that exact dotted name (enable hidden files
-   in file manager if you can't see it):
+2. **Prepare the environment** (a `.env` file or your orchestrator's env settings;
+   `.env` is gitignored — never commit it):
    ```
    PSQL_USER=health_app
    PSQL_TABLE=health_app
    PSQL_PASSWORD=<postgres password>
-   PSQL_URL=< LAN IP or hostname>       # e.g. 203.0.113.10 — NOT a container name
-   PSQL_PORT=5432                          # the postgres container's published host port
+   PSQL_URL=<postgres host>                 # LAN IP/hostname — NOT a container name, unless both run in one compose network
+   PSQL_PORT=5432                           # the published postgres port
    INGEST_SECRET=$(openssl rand -hex 32)
    INGEST_HEADER=X-Ingest-Token
    MAX_PAYLOAD_BYTES=67108864
    ```
    See `.env.example` for the full key reference (`PSQL_URL` is the **host**;
    `PSQL_TABLE` is the **database name** — HAE's odd key name is preserved for parity).
-   Keep `env_file` in the simple list form in `docker-compose.yml`: Docker
-   ships Compose v2.20, which rejects the extended `path:`/`required:` syntax.
 
    **How env vars reach the app** (they are never baked into the image — image layers
    are readable by anyone with the image): the image declares every key with an empty
-   default so Docker's create-container wizard lists them and `docker inspect`
-   documents them; the real values are injected at container start, either from `.env`
-   via the compose `env_file` (the Project path above) or typed into the wizard's
-   Environment tab (standalone-container path). Both override the image defaults. Leaving
-   `INGEST_SECRET`/`PSQL_*` blank keeps the app fail-closed: every ingest/MCP request is
-   401'd until a real secret is supplied, and the health probe never dials ambient
-   `localhost:5432`.
+   default so `docker inspect` and container wizards list them; the real values are
+   injected at container start from `.env` / `--env` / your orchestrator. All override
+   the image defaults. Leaving `INGEST_SECRET`/`PSQL_*` blank keeps the app fail-closed:
+   every ingest/MCP request is 401'd until a real secret is supplied, and the health
+   probe never dials ambient `localhost:5432`.
 
-3. **Create the archive folder** (Docker never creates bind-mount folders, and
-   the image runs as UID 10001, not your the host OS user):
+3. **Create the data folder** (orchestrators often don't create bind-mount folders,
+   and the image runs as UID 10001, not your user). The folder must be writable by
+   UID 10001 — both ownership AND mode bits matter:
    ```sh
-   sudo mkdir -p health-db/data
-   sudo chown -R 10001:10001 health-db/data
+   mkdir -p /srv/health-db/data
+   chown -R 10001:10001 /srv/health-db/data
+   chmod -R 755 /srv/health-db/data
+   ```
+   `chown` alone is not enough when the directory has no write bit (e.g. mode `555`):
+   the app gets `PermissionError` on `data/archive`. If the container still shows
+   `555`, the mounted path is not the one you changed — confirm from the host:
+   ```sh
+   stat -c '%i %a %u:%g %n' /srv/health-db/data
+   docker exec health-db stat -c '%i %a %u:%g' /app/data
    ```
 
-4. **Build the image on the host** (SSH in first; this can take a while on hostCPUs):
+4. **Run the container**:
    ```sh
-   cd health-db
-   sudo docker build -t health-db:latest .
+   docker run -d --name health-db \
+     --env-file .env \
+     -p 8000:8000 -p 8100:8100 \
+     -v /srv/health-db/data:/app/data \
+     --restart unless-stopped \
+     health-db:latest
    ```
-   `.dockerignore` keeps `.git`, `.env`, `data/`, `.tenet/` etc. out of the build context,
-   so no health data or secrets end up in the image. Verify the image appears in
-   Docker → **Image**.
+   The entrypoint runs migrations at startup (`health-migrate` →
+   `migrations/0001_init.sql`), then serves ingest on :8000 and MCP on :8100. The
+   verbatim archive lives in the mounted `data/` folder and survives container
+   recreation.
 
-5. **Create the Project**: Docker → **Project → Create** → name `health-db`,
-   path `health-db` (the wizard picks up `docker-compose.yml`, which
-   references `health-db:latest`). The entrypoint runs migrations at startup
-   (`health-migrate` → `migrations/0001_init.sql`), then serves ingest on :8000 and MCP
-   on :8100. The verbatim archive lives in `health-db/data` and survives
-   container recreation (and shows up in host backups, unlike a named volume in
-   `var/lib/docker`).
+   With `docker compose`, the included `docker-compose.yml` builds the image and adds
+   a disposable postgres:18 for local use (`docker compose up --build`). For a
+   production run, point `PSQL_URL`/`PSQL_PORT` at your real postgres and replace the
+   named volume with a bind mount (or keep the named volume and back it up).
 
-   To ship code changes: `git pull`, rebuild with step 4, then Project → **Build**
-   (don't delete the project). Watch startup in Container → health-db → Details → Log.
+   To ship code changes: `git pull`, rebuild with step 1, recreate the container.
 
-   *Alternative — standalone container instead of a Project:* Docker →
-   **Container → Create** from `health-db:latest`; the Environment tab lists every key
-   from the image declaration (step 2's layering) so you can type the values there.
-   Map 8000/8100, mount the same data folder, and add `restart: unless-stopped` via the
-   settings. Note the host OS won't let you edit a container's env after creation (duplicate-only),
-   which is why the Project + `.env` path is the documented default.
-
-6. **Verify**:
+5. **Verify**:
    ```sh
-   curl http://<server>:8000/api/health                      # {"status":"ok",...}
-   curl -H "X-Ingest-Token: $INGEST_SECRET" http://<server>:8000/api/ingest/stats
+   curl http://<host>:8000/api/health                      # {"status":"ok",...}
+   curl -H "X-Ingest-Token: $INGEST_SECRET" http://<host>:8000/api/ingest/stats
    ```
-
-Shell alternative (same build, runs the stack without Docker Project tracking):
-```sh
-cd health-db
-sudo docker compose up -d --build
-```
-
-Local dev variant: `docker compose -f docker-compose.local.yml up --build` — spins up a
-disposable postgres:18 plus the service, building the image from source.
 
 ## HAE app configuration (iPhone)
 
 Three REST automations (JSON, **v2** format, **Batch Requests ON**, header
 `X-Ingest-Token: <INGEST_SECRET>`, timeout 60s), pointed at
-`http://<dev-machine-or-server>:8000/api/ingest`:
+`http://<server-host>:8000/api/ingest`:
 
 | # | Name | Metrics | Grouping | Cadence |
 |---|---|---|---|---|
@@ -206,7 +196,7 @@ re-upserts with latest-wins semantics, so **workout/HR/route columns are rewritt
 with corrected values while `raw_samples` and `daily_rollups` are unchanged**. It is
 idempotent — running it twice changes nothing the second time — and never deletes
 `raw_ingest` rows (the audit row is updated in place with `outcome='repaired'`). It
-reads only from the on-disk archive, so it is safe on the host.
+reads only from the on-disk archive, so it is safe to run on a live deployment.
 
 ## Post-deploy validation (post-deploy procedure)
 
@@ -224,11 +214,11 @@ reads only from the on-disk archive, so it is safe on the host.
 
 ## MCP client configuration
 
-MCP endpoint: `http://<server>:8100/mcp` (streamable-http), auth
+MCP endpoint: `http://<server-host>:8100/mcp` (streamable-http), auth
 `Authorization: Bearer <INGEST_SECRET>` (same secret as ingest).
 
-**When clients reach MCP by a name other than localhost** ( hosthostname, or a
-Docker reverse-proxy host:port), set `MCP_ALLOWED_HOSTS` in `.env` — a
+**When clients reach MCP by a name other than localhost** (server hostname, or a
+reverse-proxy host:port), set `MCP_ALLOWED_HOSTS` in `.env` — a
 comma-separated list of Host values, e.g. `healthbox.example:8443,healthbox.example`. The MCP
 transport validates the `Host` header (DNS-rebinding protection) against a
 localhost-only default allowlist; an unlisted name is rejected with
@@ -243,7 +233,7 @@ Example client config (Claude Desktop / any streamable-http MCP client):
   "mcpServers": {
     "health-db": {
       "type": "http",
-      "url": "http://<docker-host>:8100/mcp",
+      "url": "http://<server-host>:8100/mcp",
       "headers": {
         "Authorization": "Bearer <INGEST_SECRET>"
       }
@@ -266,7 +256,7 @@ uv run pytest tests/acceptance/slice_2_perf.py -m requires_pg   # perf contract 
 uv run ruff check src/ tests/
 ```
 
-Integration tests always run against disposable postgres:18 containers — never the host
+Integration tests always run against disposable postgres:18 containers — never a real
 database. Slice-1 captured real payloads in `data/archive/` are the canonical fixtures
 (never committed).
 
@@ -274,7 +264,7 @@ database. Slice-1 captured real payloads in `data/archive/` are the canonical fi
 
 | Key | Meaning | Default |
 |---|---|---|
-| `PSQL_URL` | postgres **host** ( LAN IP/hostname, or `postgres` service name in local compose) | `localhost` |
+| `PSQL_URL` | postgres **host** (LAN IP/hostname, or `postgres` service name in local compose) | `localhost` |
 | `PSQL_PORT` | postgres port | `5432` |
 | `PSQL_USER` | role name | `health_app` |
 | `PSQL_TABLE` | database **name** (HAE parity naming) | `health_app` |
@@ -284,7 +274,7 @@ database. Slice-1 captured real payloads in `data/archive/` are the canonical fi
 | `MAX_PAYLOAD_BYTES` | 413 threshold | `67108864` (64 MiB) |
 | `HOST` / `PORT` | ingest bind | `0.0.0.0:8000` |
 | `MCP_HOST` / `MCP_PORT` | MCP bind | `0.0.0.0:8100` |
-| `MCP_ALLOWED_HOSTS` | extra Host-header names for MCP (reverse proxy/server), comma-separated | localhost only |
+| `MCP_ALLOWED_HOSTS` | extra Host-header names for MCP (reverse proxy etc.), comma-separated | localhost only |
 
-Out of scope (later manual steps): TLS termination / port forwarding behind the Docker
-reverse proxy; analysis features; predecessor decommission.
+Out of scope (later manual steps): TLS termination / reverse-proxy port forwarding;
+analysis features; predecessor decommission.

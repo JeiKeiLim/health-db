@@ -4,7 +4,7 @@ The ``pg`` fixture spins a disposable postgres:18 container via the docker
 CLI (random host port, random password), waits for readiness, creates a
 throwaway schema ``test_<hex>``, and yields a handle with psycopg-pool
 access + dict-row helpers. Teardown force-removes the container (iron law
-7: never the hostproduction database — localhost-only, per-test).
+7: never a production database — localhost-only, per-test).
 
 Skip-if-no-docker is explicit (harness: never silent) — the fixture skips
 with a named reason when the docker CLI is missing or the daemon is down.

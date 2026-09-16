@@ -1,7 +1,6 @@
 """psycopg3 connection pool built from ``PSQL_*`` environment keys (job slice-2-db-config).
 
-Env keys (documented in ``.env.example``; spec §Tech Stack — single
-``health_app`` account on the postgres):
+Env keys (documented in ``.env.example``; single ``health_app`` account):
 
 - ``PSQL_USER`` — role name (default ``health_app``)
 - ``PSQL_TABLE`` — database name (default ``health_app``; HAE's odd key name

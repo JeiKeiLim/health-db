@@ -333,8 +333,8 @@ class TestMcpAsgiApp:
 class TestMcpHostHeader:
     """DNS-rebinding allowlist: non-localhost Hosts must reach the MCP layer.
 
-    Regression for the host/reverse-proxy deployment: the old ``host=
-    "127.0.0.1"`` shorthand installed a localhost-only allowlist, so
+    Regression for reverse-proxy deployments: the old ``host="127.0.0.1"``
+    shorthand installed a localhost-only allowlist, so a proxied
     ``Host: healthbox.example:8443`` was rejected with 421 *after* a valid Bearer
     check. TestClient's default Host is ``testserver``, which stands in for
     that proxy hostname; these tests send a valid token so the Bearer

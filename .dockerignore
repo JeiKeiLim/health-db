@@ -6,8 +6,14 @@ data
 .env
 .tenet
 backlog
+.claude
+.agents
+.codex
+opencode.json
+.mcp.json
+AGENTS.md
 tests
-docker-compose.local.yml
+docker-compose.yml
 *.tar
 *.tar.gz
 .DS_Store

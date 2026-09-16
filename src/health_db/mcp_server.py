@@ -75,7 +75,7 @@ ENV_MCP_ALLOWED_HOSTS = "MCP_ALLOWED_HOSTS"
 DEFAULT_MCP_HOST = "0.0.0.0"
 DEFAULT_MCP_PORT = 8100
 # Host patterns the SDK's DNS-rebinding protection accepts by default. These
-# match the SDK's own localhost allowlist; anything beyond ( hosthostname,
+# match the SDK's own localhost allowlist; anything beyond (server hostname,
 # reverse-proxy host:port) must be added via MCP_ALLOWED_HOSTS.
 DEFAULT_MCP_ALLOWED_HOSTS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
 # Origin patterns (browser cross-origin requests). Non-browser MCP clients
@@ -121,9 +121,9 @@ def mcp_allowed_hosts(environ: dict[str, str] | None = None) -> list[str]:
 
     Comma-separated, whitespace-trimmed; blank entries dropped. The defaults
     are the SDK's localhost patterns; entries here are ADDED to them, so a
-    hosthostname or reverse-proxy host:port (e.g. ``healthbox.example:8443``) can be
-    reached without weakening the localhost defaults. SDK pattern support:
-    exact match, or ``base:*`` to accept any port on ``base``.
+    server hostname or reverse-proxy host:port (e.g. ``healthbox.example:8443``)
+    can be reached without weakening the localhost defaults. SDK pattern
+    support: exact match, or ``base:*`` to accept any port on ``base``.
     """
     source = dict(os.environ if environ is None else environ)
     extra = [part.strip() for part in source.get(ENV_MCP_ALLOWED_HOSTS, "").split(",")]
@@ -424,8 +424,8 @@ def mcp_asgi_app(pool: object | None = None) -> Starlette:
     DNS-rebinding protection is passed explicitly instead of relying on the
     SDK's ``host="127.0.0.1"`` shorthand: that shorthand hard-codes a
     localhost-only Host allowlist, so every request through a reverse proxy
-    or via a hosthostname got ``421 Invalid Host header`` before auth ran.
-    The allowlist is ``mcp_allowed_hosts()`` — the localhost patterns plus
+    or via a non-localhost hostname got ``421 Invalid Host header`` before
+    auth ran. The allowlist is ``mcp_allowed_hosts()`` — the localhost patterns plus
     anything in ``MCP_ALLOWED_HOSTS``; protection stays ON, and the Bearer
     middleware remains the actual access control.
     """

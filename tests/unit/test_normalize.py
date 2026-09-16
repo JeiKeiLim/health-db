@@ -574,7 +574,7 @@ class TestWorkoutRows:
                 {
                     "timestamp": "2026-09-08 06:30:10 +0900",
                     "latitude": 37.5665,
-                    "longitude": REDACTED,
+                    "longitude": 126.9780,
                     "course": 45.0,
                     "speed": 3.2,
                     "altitude": 38.0,
@@ -586,7 +586,7 @@ class TestWorkoutRows:
         (_, _, route) = workout_rows(doc(workouts=[workout]))[0]
         assert len(route) == 1
         point = route[0]
-        assert (point.latitude, point.longitude) == (37.5665, REDACTED)
+        assert (point.latitude, point.longitude) == (37.5665, 126.9780)
         assert point.course == 45.0
         assert point.speed == 3.2
         assert point.elevation == 38.0
@@ -601,7 +601,7 @@ class TestWorkoutRows:
                 {
                     "timestamp": "2026-09-08 06:30:20 +0900",
                     "latitude": 37.5666,
-                    "longitude": REDACTED,
+                    "longitude": 126.9780,
                 },
             ]
         )
