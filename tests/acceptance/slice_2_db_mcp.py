@@ -4,12 +4,16 @@ Generated from .tenet/runs/2026-09-08-hae-ingest/scenarios.md.
 Tagged slice2 — NOT run by the slice-1 integration job; the slice-2 e2e job
 runs slice-1 + slice-2 tests additively.
 
-Slice-2 scope: PostgreSQL persistence (partitioned raw_samples, latest-wins
-upserts, KST-day rollups), replay of archived payloads, workout/HR/route
-storage, MCP streamable-HTTP server (8 tools / 3 resources, Bearer auth),
-DB-outage safety. Requires a disposable postgres container via
-INTEGRATION_TEST_DB (see harness.md iron law 7).
-"""
+    Slice-2 scope: PostgreSQL persistence (partitioned raw_samples, latest-wins
+    upserts, KST-day rollups), replay of archived payloads, workout/HR/route
+    storage, MCP streamable-HTTP server (8 tools / 3 resources, Bearer auth),
+    DB-outage safety. Requires a disposable postgres container via
+    INTEGRATION_TEST_DB (see harness.md iron law 7).
+
+    Sleep point in the standard payload carries no ``inBed`` key (run
+    2026-09-17-normalizer-audit: inBed>0 would split out a sleep_in_bed row
+    and break the fixed 4-row counts).
+    """
 
 import json
 
@@ -125,7 +129,10 @@ class TestIngestPersistsAndRollsUp:
         ]
         assert names == ["blood_pressure_diastolic", "blood_pressure_systolic"]
 
-    def test_sleep_asleep_preference(self, pg, api):
+    def test_sleep_totalsleep_precedence(self, pg, api):
+        # Re-derived (run 2026-09-17-normalizer-audit §1): totalSleep wins
+        # when > 0 — the old asleep-preference expectation (7.0) stored the
+        # asleep:0 Watch sentinel as 0.0 and mis-stored mixed-stage nights.
         api.post_metric_raw(
             "sleep_analysis",
             "hr",
@@ -139,7 +146,12 @@ class TestIngestPersistsAndRollsUp:
             },
         )
         qty = pg.scalar("SELECT qty FROM raw_samples")
-        assert qty == 7.0, "asleep wins when present (AutoSleep rule)"
+        assert qty == 7.5, "totalSleep wins when present (mixed-stage rule)"
+        inbed = pg.scalar(
+            "SELECT count(*) FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name = 'sleep_in_bed'"
+        )
+        assert inbed == 0, "point carries no inBed → no sleep_in_bed row"
 
     def test_unknown_metric_autoregisters(self, pg, api):
         api.post_metric(name="brand_new_metric", units="count", qty=1)

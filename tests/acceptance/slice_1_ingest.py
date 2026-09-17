@@ -58,7 +58,9 @@ def make_metrics_payload(automation: str = "metrics-all") -> dict:
                         {"date": "2026-09-08 09:00:00 +0900", "Min": 65, "Avg": 72, "Max": 85},
                     ],
                 },
-                {  # sleep_analysis aggregated shape, no qty
+                {  # sleep_analysis aggregated shape, no qty (no inBed key:
+                    # run 2026-09-17-normalizer-audit inBed>0 would split a
+                    # sleep_in_bed row and break the samples==4 count)
                     "name": "sleep_analysis",
                     "units": "hr",
                     "data": [

@@ -351,7 +351,10 @@ class TestRepairAndRecognition:
             "UPDATE raw_samples SET qty = 0.0"
         )
         assert pg.scalar("SELECT qty FROM raw_samples") == 0.0
-        api.replay_dir(archive.root, force=True)
+        # The route archived the payload into config.ARCHIVE_ROOT (the
+        # verbatim archive tree); replay must scan THAT tree — the replay
+        # corpus root (pending) is a disjoint tree by iron law 2.
+        api.replay_dir(archive.route_archive_root, force=True)
         qty = pg.scalar(
             "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
             " WHERE md.name='sleep_analysis'"
