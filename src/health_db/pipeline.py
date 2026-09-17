@@ -14,7 +14,8 @@ payload (all-or-nothing per the interface contract):
 3. ``raw_samples`` upserts (latest-wins ``ON CONFLICT (metric_id, source_id,
    ts) DO UPDATE SET qty/ingested_at`` — iron law 6: overlapping re-sends
    update rows, they never append; non-canonical-unit rows were already
-   skipped by the normalizer, iron law 4).
+   skipped by the normalizer, iron law 4 — visibly, in the result's
+   ``skipped`` accounting).
 4. Day-scoped rollup recompute: ``DELETE FROM daily_rollups WHERE day_kst =
    ANY(days)`` then re-``INSERT ... SELECT ... GROUP BY`` from raw_samples —
    parity with predecessor ingester.py:237-253 (corrected values always
@@ -46,12 +47,13 @@ process restarts with a cold archive index.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from health_db.db.helpers import _Ids, _parse_headers, recompute_rollups
 from health_db.db.partitions import ensure_backfill_range, ensure_partitions
 from health_db.normalize import SampleRow, workout_rows
+from health_db.payloads import empty_skipped, merge_skipped
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -81,12 +83,21 @@ class DbUnavailable(Exception):
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
-    """Outcome of one stored payload (route-level response contract)."""
+    """Outcome of one stored payload (route-level response contract).
+
+    ``skipped`` is the run-2026-09-17-normalizer-audit §5 visible-skip
+    accounting (spec §5 keys, all defaulting to 0, always present): the
+    payload's drop census — unit-unconvertible samples, all-zero sleep
+    points, unrecognized shapes, dropped ECG/notification rows — merged
+    from the normalizer + payloads report by :func:`ingest_payload`.
+    Informational only; never blocks the store.
+    """
 
     outcome: str
     metrics: int
     samples: int
     workouts: int
+    skipped: dict[str, int] = field(default_factory=empty_skipped)
 
 
 def _canonical_unit(name: str, declared: str) -> tuple[str, bool]:
@@ -243,6 +254,7 @@ def ingest_payload(
                     metrics=0,
                     samples=0,
                     workouts=0,
+                    skipped=empty_skipped(),
                 )
 
             document = parsed if isinstance(parsed, dict) else {}
@@ -252,9 +264,17 @@ def ingest_payload(
 
             _upsert_workouts(conn, parsed)
 
-            from health_db.normalize import metric_rows
+            from health_db.normalize import metric_rows_detailed
 
-            rows = metric_rows(parsed)
+            # Skip census (spec §5): the metric normalizer reports its own
+            # drops (unit_unconvertible, sleep_no_value) alongside the rows;
+            # the payloads-parse counters (unrecognized_shape) and the lane
+            # counters (ecg, notification) merge in from jobs 5/6's
+            # normalizers via the report. Zero silent drops: every dropped
+            # point lands in exactly one counter of this dict.
+            rows, metric_skips = metric_rows_detailed(parsed)
+            skipped = empty_skipped()
+            merge_skipped(skipped, metric_skips)
             ids = _Ids()
             for row in rows:
                 # register dims before partition create; declared unit
@@ -291,6 +311,7 @@ def ingest_payload(
                 metrics=len(metric_groups),
                 samples=stored,
                 workouts=len(workout_entries),
+                skipped=skipped,
             )
     except DbUnavailable:
         raise

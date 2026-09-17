@@ -44,6 +44,10 @@ Counting contract (:class:`ReplayReport`):
   queued/on disk for a later attempt.
 - ``skipped`` counts unreadable/unparseable/non-payload files (each with a
   redacted error note in ``errors``).
+- ``skip_accounting`` folds every processed payload's data-point drop
+  census (run 2026-09-17-normalizer-audit §5 keys) into one run-wide
+  object — printed to stderr as diagnostics, mirrored in the JSON
+  summary.
 
 CLI surface (``uv run health-replay``): progress lines + a JSON summary to
 stdout; exit 0 even when some payloads failed (they are recoverable by
@@ -65,6 +69,7 @@ from typing import TYPE_CHECKING
 
 import health_db.config as config
 from health_db.db.helpers import SELECT_RAW_INGEST_SHA
+from health_db.payloads import empty_skipped, merge_skipped
 from health_db.pending import PendingStore
 from health_db.pipeline import ingest_payload
 
@@ -77,7 +82,14 @@ SIDECAR_SUFFIX = ".meta.json"
 
 @dataclass(slots=True)
 class ReplayReport:
-    """Outcome of one replay run (JSON-ready summary dict)."""
+    """Outcome of one replay run (JSON-ready summary dict).
+
+    ``skip_accounting`` folds every ingested payload's spec-§5 drop census
+    (unit_unconvertible / unrecognized_shape / ecg / notification /
+    sleep_no_value) into one run-wide object — the zero-silent-drops
+    contract made observable across a whole backfill, printed to stderr as
+    diagnostics. Informational only; never blocks replay.
+    """
 
     root: str
     mode: str  # "dir" | "pending"
@@ -89,6 +101,7 @@ class ReplayReport:
     skipped: int = 0
     pending_drained: int = 0
     errors: list[str] = field(default_factory=list)
+    skip_accounting: dict[str, int] = field(default_factory=empty_skipped)
 
     def summary(self) -> dict[str, object]:
         """Secret-free summary for the CLI's stdout JSON line."""
@@ -103,6 +116,7 @@ class ReplayReport:
             "skipped": self.skipped,
             "pending_drained": self.pending_drained,
             "errors": list(self.errors),
+            "skip_accounting": dict(self.skip_accounting),
         }
 
 
@@ -127,6 +141,18 @@ def _payload_files(root: Path) -> list[Path]:
         and not path.name.endswith(SIDECAR_SUFFIX)
         and not _is_quarantine(path, root)
     )
+
+
+def _fold_result_skips(report: ReplayReport, result: object) -> None:
+    """Fold one ingest result's spec-§5 skip census into the run report.
+
+    Tolerant of injectable seams (unit-test fakes returning plain strings
+    or results without ``skipped``): only an int-valued known key is folded,
+    so the run-wide accounting can never be poisoned by a foreign shape.
+    """
+    skips = getattr(result, "skipped", None)
+    if isinstance(skips, dict):
+        merge_skipped(report.skip_accounting, skips)
 
 
 def replay_dir(
@@ -181,7 +207,7 @@ def replay_dir(
             continue
         sha = PendingStore.sha256_of(body)
         try:
-            apply_ingest(
+            result = apply_ingest(
                 pool,
                 document,
                 sha256=sha,
@@ -197,6 +223,7 @@ def replay_dir(
         # First-applied (pipeline already dedups an existing sha to
         # duplicate without reprocessing — zero row changes on re-run).
         report.processed += 1
+        _fold_result_skips(report, result)
     return report
 
 
@@ -239,7 +266,7 @@ def replay_pending(
             continue
         sha = str(meta.get("sha256") or PendingStore.sha256_of(body))
         try:
-            apply_ingest(
+            result = apply_ingest(
                 pool,
                 document,
                 sha256=sha,
@@ -260,6 +287,7 @@ def replay_pending(
         store.drain(path)
         report.pending_drained += 1
         report.processed += 1
+        _fold_result_skips(report, result)
     return report
 
 
@@ -354,6 +382,13 @@ def main(argv: list[str] | None = None) -> int:
         f"duplicates={report.duplicates} failed={report.failed} "
         f"skipped={report.skipped} pending_drained={report.pending_drained} "
         f"force={report.force}"
+    )
+    accounting = report.skip_accounting
+    _emit_progress(
+        f"{CLI_PROG}: skipped-points — unit_unconvertible={accounting['unit_unconvertible']} "
+        f"unrecognized_shape={accounting['unrecognized_shape']} ecg={accounting['ecg']} "
+        f"notification={accounting['notification']} "
+        f"sleep_no_value={accounting['sleep_no_value']}"
     )
     _emit_summary(report)
     return 0

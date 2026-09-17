@@ -34,7 +34,12 @@ Pipeline for ``POST /api/ingest`` (order is the contract):
    dated tree is not rewritten.
 5. **Verbatim archive** — atomic dated write ``YYYY/MM/DD/HHMMSS-<sha8>.json``.
 6. **Response** — ``{"outcome": "stored", "data_type", "metrics",
-   "samples", "workouts", "unknown_formats", "archive_path", "sha256"}``.
+   "samples", "workouts", "unknown_formats", "skipped", "archive_path",
+   "sha256"}``. ``skipped`` is the run-2026-09-17-normalizer-audit §5
+   visible-skip accounting (frozen keys, always present, zeros by default):
+   the parse-report counters (unrecognized_shape) merged with the store
+   stage's counters (unit_unconvertible / sleep_no_value / ecg /
+   notification) — the zero-silent-drops contract. Informational only.
 
 Every authorized request increments ``stats.STATS.received`` first and its
 outcome (stored/duplicate/quarantined) second; the HAE automation headers
@@ -79,7 +84,7 @@ from health_db.failures import (
     handle_malformed,
     oversized_response,
 )
-from health_db.payloads import MalformedPayload, parse
+from health_db.payloads import MalformedPayload, empty_skipped, merge_skipped, parse
 from health_db.pending import PendingStore
 from health_db.pipeline import ingest_payload
 from health_db.routes import router
@@ -249,6 +254,8 @@ def create_app() -> FastAPI:
                     "samples": report.samples,
                     "workouts": report.workouts,
                     "unknown_formats": list(report.unknown_formats),
+                    "skipped": empty_skipped()
+                    | report.skipped,  # parse counters only: no DB ran
                     "archive_path": str(path),
                     "sha256": content_sha,
                 },
@@ -292,6 +299,13 @@ def create_app() -> FastAPI:
             )
 
         app_state_stats.record_stored()
+        # Full skip census (spec §5): parse-level counters (unrecognized_shape)
+        # + store-stage counters (unit_unconvertible / sleep_no_value / ecg /
+        # notification) merged under the frozen key set — always present,
+        # informational, never blocking.
+        response_skipped = empty_skipped()
+        merge_skipped(response_skipped, report.skipped)
+        merge_skipped(response_skipped, result.skipped)
         return JSONResponse(
             status_code=200,
             content={
@@ -301,6 +315,7 @@ def create_app() -> FastAPI:
                 "samples": result.samples,
                 "workouts": result.workouts,
                 "unknown_formats": list(report.unknown_formats),
+                "skipped": response_skipped,
                 "archive_path": str(path),
                 "sha256": content_sha,
             },

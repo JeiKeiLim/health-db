@@ -5,6 +5,11 @@ OBSERVABLE replay outcomes: which payloads were applied, which were skipped,
 which failed, that pending pairs are deleted only after a successful apply,
 and that reports are JSON-ready. DB-side dedup behavior (raw_ingest gate)
 is covered by the postgres acceptance suite (TestBackfillReplayIdempotent).
+
+Run 2026-09-17-normalizer-audit job-4 additions: the run-wide spec-§5 skip
+accounting — every processed payload's drop census folds into
+``report.skip_accounting``, printed to stderr as diagnostics and mirrored
+in the JSON summary.
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +50,7 @@ class FakeIngest:
     fail_shas: set[str] = field(default_factory=set)
     calls: list[tuple[str, str, str]] = field(default_factory=list)  # (sha, body, outcome)
     forces: list[bool] = field(default_factory=list)
+    skips: dict[str, dict[str, int]] = field(default_factory=dict)  # sha → spec-§5 census
 
     def __call__(self, pool, document, *, sha256, body, headers, outcome, force=False):
         assert pool == "fake-pool", "replay must pass its pool through"
@@ -51,7 +58,16 @@ class FakeIngest:
         self.forces.append(force)
         if sha256 in self.fail_shas:
             raise RuntimeError("simulated store-stage failure")
-        return self.results.get(sha256, "stored")
+        result = self.results.get(sha256, "stored")
+        if sha256 in self.skips:
+
+            @dataclass
+            class _WithSkips:
+                outcome: str
+                skipped: dict[str, int]
+
+            return _WithSkips(result, self.skips[sha256])
+        return result
 
 
 @pytest.fixture()
@@ -261,6 +277,128 @@ class TestReplayPending:
         monkeypatch.setattr(db_pool, "existing_pool", lambda: None)
         with pytest.raises(RuntimeError):
             replay.replay_pending(None, pending=PendingStore(root=tmp_path / "p"))
+
+
+class TestSkipAccounting:
+    """Spec §5 run-wide skip accounting: replay folds every processed
+    payload's drop census into report.skip_accounting (zero-silent-drops
+    observability across a backfill)."""
+
+    def _dir_with(self, tmp_path: Path, payloads: list[dict]) -> None:
+        day = tmp_path / "2026" / "01" / "01"
+        day.mkdir(parents=True, exist_ok=True)
+        for index, payload in enumerate(payloads):
+            (day / f"12000{index}-p{index}.json").write_bytes(json.dumps(payload).encode("utf-8"))
+
+    def test_dir_replay_folds_skip_censuses_across_payloads(self, tmp_path, fake_pool):
+        self._dir_with(tmp_path, [metrics_payload(), metrics_payload(qty=7.0)])
+        first_sha = PendingStore.sha256_of(json.dumps(metrics_payload()).encode("utf-8"))
+        second_sha = PendingStore.sha256_of(json.dumps(metrics_payload(qty=7.0)).encode("utf-8"))
+        ingest = FakeIngest(
+            skips={
+                first_sha: {"sleep_no_value": 1, "unit_unconvertible": 2},
+                second_sha: {"ecg": 0, "notification": 3},
+            }
+        )
+
+        report = replay.replay_dir(tmp_path, "fake-pool", ingest=ingest)
+
+        assert report.processed == 2
+        assert report.skip_accounting == {
+            "unit_unconvertible": 2,
+            "unrecognized_shape": 0,
+            "ecg": 0,
+            "notification": 3,
+            "sleep_no_value": 1,
+        }
+
+    def test_summary_carries_skip_accounting_json_ready(self, tmp_path, fake_pool):
+        self._dir_with(tmp_path, [metrics_payload()])
+        sha = PendingStore.sha256_of(json.dumps(metrics_payload()).encode("utf-8"))
+        ingest = FakeIngest(skips={sha: {"unit_unconvertible": 4}})
+
+        report = replay.replay_dir(tmp_path, "fake-pool", ingest=ingest)
+
+        encoded = json.dumps(report.summary())
+        decoded = json.loads(encoded)
+        assert decoded["skip_accounting"] == {
+            "unit_unconvertible": 4,
+            "unrecognized_shape": 0,
+            "ecg": 0,
+            "notification": 0,
+            "sleep_no_value": 0,
+        }
+
+    def test_pending_replay_folds_skip_census(self, tmp_path, fake_pool):
+        store = PendingStore(root=tmp_path / "pending")
+        body = json.dumps(metrics_payload()).encode("utf-8")
+        sha = store.sha256_of(body)
+        store.store(body, sha256=sha)
+        ingest = FakeIngest(skips={sha: {"sleep_no_value": 2}})
+
+        report = replay.replay_pending("fake-pool", ingest=ingest, pending=store)
+
+        assert report.pending_drained == 1
+        assert report.skip_accounting["sleep_no_value"] == 2
+
+    def test_failed_payload_contributes_no_census(self, tmp_path, fake_pool):
+        self._dir_with(tmp_path, [metrics_payload()])
+        sha = PendingStore.sha256_of(json.dumps(metrics_payload()).encode("utf-8"))
+        ingest = FakeIngest(fail_shas={sha}, skips={sha: {"ecg": 9}})
+
+        report = replay.replay_dir(tmp_path, "fake-pool", ingest=ingest)
+
+        assert report.failed == 1 and report.processed == 0
+        assert report.skip_accounting["ecg"] == 0, "failed stores must not fold counts"
+
+    def test_plain_string_results_are_tolerated(self, tmp_path, fake_pool):
+        # Legacy/injected seams returning a bare outcome string (no
+        # .skipped attribute) must not crash the fold.
+        self._dir_with(tmp_path, [metrics_payload()])
+        report = replay.replay_dir(tmp_path, "fake-pool", ingest=FakeIngest())
+        assert set(report.skip_accounting) == {
+            "unit_unconvertible",
+            "unrecognized_shape",
+            "ecg",
+            "notification",
+            "sleep_no_value",
+        }
+
+    def test_cli_prints_skip_accounting_diagnostics_to_stderr(
+        self, tmp_path, monkeypatch, capsys, fake_pool
+    ):
+        from health_db.db import pool as db_pool
+
+        self._dir_with(tmp_path, [metrics_payload()])
+        sha = PendingStore.sha256_of(json.dumps(metrics_payload()).encode("utf-8"))
+        ingest = FakeIngest(skips={sha: {"unit_unconvertible": 1, "sleep_no_value": 2}})
+
+        real_replay_dir = replay.replay_dir  # capture BEFORE the monkeypatch
+        counting = ingest
+
+        def fake_replay_dir(root, pool=None, *, ingest=None, force=False):
+            # Call the REAL implementation captured BEFORE the monkeypatch,
+            # forcing the counting ingest seam in (main never passes one,
+            # and calling the module attribute here would recurse into
+            # this very fake).
+            return real_replay_dir(root, pool, ingest=counting, force=force)
+
+        monkeypatch.setattr(replay, "_payload_files", lambda root: list(root.rglob("*-p0.json")))
+        monkeypatch.setattr(replay, "replay_dir", fake_replay_dir)
+        monkeypatch.setattr(db_pool, "check", lambda pool=None, timeout=3.0: True)
+        # main() runs config.load() (env re-read), so the scan root must be
+        # set through the ENVIRONMENT, not the module attribute alone.
+        monkeypatch.setenv("ARCHIVE_ROOT", str(tmp_path))
+        monkeypatch.delenv("PSQL_URL", raising=False)
+
+        code = replay.main([])
+
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "skipped-points" in captured.err, "diagnostics line must go to stderr"
+        assert "unit_unconvertible=1" in captured.err
+        assert "sleep_no_value=2" in captured.err
+        assert json.loads(captured.out)["skip_accounting"]["unit_unconvertible"] == 1
 
 
 class TestAlreadyStored:

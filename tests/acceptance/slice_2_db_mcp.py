@@ -96,9 +96,17 @@ class TestIngestPersistsAndRollsUp:
         assert [d["day_kst"].isoformat() for d in days] == ["2026-09-08", "2026-09-09"]
 
     def test_non_canonical_unit_skipped(self, pg, api):
+        # Updated by run 2026-09-17-normalizer-audit §4 (iron-law-4 amendment,
+        # user-approved): lb now CONVERTS to kg (÷2.20462) instead of skipping;
+        # the skip-and-count behavior applies only to units with no exact
+        # factor (see parse_everything.py test_unconvertible_unit_counted_visibly).
         api.post_metric(name="weight_body_mass", units="lb", qty=160.0)
-        n = pg.scalar("SELECT count(*) FROM raw_samples")
-        assert n == 0, "lb must be skipped (canonical unit is kg)"
+        row = pg.row(
+            "SELECT rs.qty, md.canonical_unit FROM raw_samples rs "
+            "JOIN metric_dim md USING (metric_id) WHERE md.name='weight_body_mass'"
+        )
+        assert row["qty"] == pytest.approx(160.0 / 2.20462, abs=1e-4)
+        assert row["canonical_unit"] == "kg"
 
     def test_kj_converted_to_kcal(self, pg, api):
         api.post_metric(name="active_energy", units="kJ", qty=418.4)

@@ -8,7 +8,11 @@ hardening fixes from the slice-1-payloads code-critic review:
 - invalid UTF-8 / NaN / Infinity / deep nesting / non-finite floats →
   MalformedPayload (never RecursionError or inf leakage),
 - full-key-set shape recognition (partial overlap → unknown_formats),
-- data_type stays within the 'metrics' | 'workouts' contract enum.
+- data_type stays within the 'metrics' | 'workouts' contract enum,
+- run 2026-09-17-normalizer-audit §5 (job-4): the ``skipped`` accounting —
+  always present, frozen keys, unrecognized_shape mirrored from
+  unknown_formats — plus the empty_skipped/merge_skipped aggregation
+  helpers the pipeline + replay fold counter censuses with.
 """
 
 from __future__ import annotations
@@ -17,7 +21,14 @@ import json
 
 import pytest
 
-from health_db.payloads import MalformedPayload, PayloadReport, parse
+from health_db.payloads import (
+    SKIPPED_KEYS,
+    MalformedPayload,
+    PayloadReport,
+    empty_skipped,
+    merge_skipped,
+    parse,
+)
 
 
 def _recursion_limit() -> int:
@@ -607,3 +618,96 @@ class TestContract:
     def test_malformed_payload_is_valueerror(self):
         # API layer catches ValueError-shaped MalformedPayload for 400 + quarantine.
         assert issubclass(MalformedPayload, ValueError)
+
+
+# ---------------------------------------------------------------------------
+# Skip accounting (run 2026-09-17-normalizer-audit §5, job-4)
+# ---------------------------------------------------------------------------
+
+
+class TestSkipAccounting:
+    def test_skipped_always_present_with_frozen_keys_all_zero(self):
+        report = parse(wrap([metric("step_count", [{"qty": 1, "date": DATE}])]))
+        assert set(report.skipped) == set(SKIPPED_KEYS)
+        assert report.skipped == dict.fromkeys(SKIPPED_KEYS, 0)
+
+    def test_unrecognized_point_increments_unrecognized_shape(self):
+        report = parse(wrap([metric("heart_rate", [{"Avg": 72, "date": DATE}])]))
+        assert report.skipped["unrecognized_shape"] == 1
+        assert len(report.unknown_formats) == 1
+
+    def test_unrecognized_workout_increments_unrecognized_shape(self):
+        report = parse(wrap([], [{"name": "no-id workout"}]))
+        assert report.skipped["unrecognized_shape"] == 1
+        assert len(report.unknown_formats) == 1
+
+    def test_two_drops_increment_by_two(self):
+        report = parse(
+            wrap(
+                [
+                    metric("blood_pressure", [{"systolic": 120, "date": DATE}]),
+                    metric("heart_rate", [{"Avg": 72, "date": DATE}]),
+                ]
+            )
+        )
+        assert report.skipped["unrecognized_shape"] == 2
+        assert len(report.unknown_formats) == 2
+
+    def test_recognized_shapes_never_counted(self):
+        report = parse(
+            wrap(
+                [
+                    metric("step_count", [{"qty": 1, "date": DATE}]),
+                    metric(
+                        "sleep_analysis",
+                        [{"date": "2026-09-08", "asleep": 7.0}],
+                    ),
+                    metric("heart_rate", [{"Min": 60, "Avg": 70, "Max": 80, "date": DATE}]),
+                ]
+            )
+        )
+        assert report.unknown_formats == ()
+        assert report.skipped["unrecognized_shape"] == 0
+
+    def test_empty_skipped_returns_fresh_independent_dicts(self):
+        first = empty_skipped()
+        second = empty_skipped()
+        assert first == second == dict.fromkeys(SKIPPED_KEYS, 0)
+        first["ecg"] = 5
+        assert second["ecg"] == 0, "callers must own independent copies"
+
+    def test_merge_folds_known_keys_in_place(self):
+        target = empty_skipped()
+        merged = merge_skipped(target, {"sleep_no_value": 2, "ecg": 1})
+        assert merged is target, "merge is in place"
+        assert target["sleep_no_value"] == 2 and target["ecg"] == 1
+
+    def test_merge_ignores_unknown_and_non_int_keys(self):
+        target = empty_skipped()
+        merge_skipped(target, {"bogus_key": 9, "ecg": True, "notification": "3", "hrv": 1.5})
+        assert set(target) == set(SKIPPED_KEYS), "unknown keys must not leak in"
+        assert target["ecg"] == 0 and target["notification"] == 0
+
+    def test_merge_accumulates_across_calls(self):
+        target = empty_skipped()
+        merge_skipped(target, {"unit_unconvertible": 1})
+        merge_skipped(target, {"unit_unconvertible": 2, "unrecognized_shape": 3})
+        assert target["unit_unconvertible"] == 3
+        assert target["unrecognized_shape"] == 3
+
+    def test_skipped_keys_contract_is_frozen_spec_set(self):
+        # spec §5 drift-guard: keys are frozen by the run spec. A change
+        # here must be a spec change, never an accident.
+        assert SKIPPED_KEYS == (
+            "unit_unconvertible",
+            "unrecognized_shape",
+            "ecg",
+            "notification",
+            "sleep_no_value",
+        )
+
+    def test_report_contract_frozen_with_skipped_field(self):
+        report = parse(wrap([metric("step_count", [{"qty": 1, "date": "d"}])]))
+        assert isinstance(report, PayloadReport)
+        with pytest.raises(Exception):
+            report.skipped = {}  # type: ignore[misc]

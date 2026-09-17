@@ -20,7 +20,9 @@ Everything else is *reported*, never rejected:
 - Unknown metric **names** are always accepted (auto-registered in
   ``metric_dim`` in slice 2); slice 1 keeps no name registry.
 - Unknown metric data **shapes** are flagged in ``unknown_formats`` (e.g. a
-  future HAE format change) while the payload is still accepted and counted.
+  future HAE format change) while the payload is still accepted and counted,
+  and mirrored into the ``skipped`` accounting's ``unrecognized_shape``
+  counter (run 2026-09-17-normalizer-audit §5).
 
 Recognized data-point shapes (shape-based, not name-based, so renamed or
 future metrics with a documented shape still parse). Recognition requires
@@ -60,10 +62,52 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Literal
 
 DataType = Literal["metrics", "workouts"]
+
+# Visible-skip accounting keys (run spec §5 — zero-silent-drops contract).
+# Frozen set: every dropped data point increments exactly ONE of these
+# counters; the object is always present in the ingest response with every
+# key defaulting to 0. Counters are informational and never block ingest.
+# Producers: unit_unconvertible + sleep_no_value come from the metric
+# normalizer's skip census (normalize.metric_rows_detailed); ecg +
+# notification from the lane normalizers (jobs 5/6); unrecognized_shape
+# mirrors unknown_formats here (count only — the reason strings stay in
+# unknown_formats).
+SKIPPED_KEYS: tuple[str, ...] = (
+    "unit_unconvertible",
+    "unrecognized_shape",
+    "ecg",
+    "notification",
+    "sleep_no_value",
+)
+_SKIPPED_ZERO: dict[str, int] = dict.fromkeys(SKIPPED_KEYS, 0)
+
+
+def empty_skipped() -> dict[str, int]:
+    """A fresh all-zero skip counter with exactly the spec §5 keys.
+
+    Returns a mutable dict — callers own their copy (the shared zero
+    template is copied per call, never handed out).
+    """
+    return dict(_SKIPPED_ZERO)
+
+
+def merge_skipped(target: dict[str, int], source: Mapping[str, int]) -> dict[str, int]:
+    """Fold one skip census into ``target`` (in place, returns ``target``).
+
+    Unknown keys are IGNORED defensively (a malformed census must never
+    inject foreign keys into the response accounting) while every known key
+    absent from ``source`` stays at its current value. Never raises.
+    """
+    for key in SKIPPED_KEYS:
+        value = source.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            target[key] += value
+    return target
 
 # FULL key sets for shape recognition (research/hae-json-v2-format.md). A
 # data point matches a shape only when every key of the set is present —
@@ -94,6 +138,14 @@ class PayloadReport:
     JSON-ready dicts with ``name``/``units``/``reason`` keys describing
     metric groups or workouts that deviate from the documented shapes.
     Anomalies never reject the payload.
+
+    ``skipped`` carries the run-2026-09-17-normalizer-audit §5 visible-skip
+    accounting with the frozen keys of :data:`SKIPPED_KEYS` (all zero by
+    default, always present): every dropped data point increments exactly
+    one counter. At parse time only ``unrecognized_shape`` is populated
+    (mirroring ``unknown_formats``); the metric-normalizer/lane counters
+    merge in downstream (pipeline) so the ingest response reports the
+    payload's full skip census. Informational only — never blocks ingest.
     """
 
     data_type: DataType
@@ -101,6 +153,7 @@ class PayloadReport:
     samples: int
     workouts: int
     unknown_formats: tuple[dict[str, str], ...] = ()
+    skipped: dict[str, int] = field(default_factory=empty_skipped)
 
 
 def _point_shape(point: object) -> str | None:
@@ -195,6 +248,7 @@ def _parse_document(document: object) -> PayloadReport:
         raise MalformedPayload("payload carries no metrics and no workouts (empty v2 envelope)")
 
     unknown: list[dict[str, str]] = []
+    skipped = empty_skipped()
     samples = 0
     for group in metrics:
         if isinstance(group, dict) and isinstance(group.get("data"), list):
@@ -202,10 +256,15 @@ def _parse_document(document: object) -> PayloadReport:
         anomaly = _inspect_metric_group(group)
         if anomaly is not None:
             unknown.append(anomaly)
+            # Mirror into the skipped accounting (count only; the reason
+            # strings stay in unknown_formats). spec §5: a dropped point
+            # must be visible in exactly one counter.
+            skipped["unrecognized_shape"] += 1
     for workout in workouts:
         anomaly = _inspect_workout(workout)
         if anomaly is not None:
             unknown.append(anomaly)
+            skipped["unrecognized_shape"] += 1
 
     return PayloadReport(
         data_type=_classify_data_type(len(metrics), len(workouts)),
@@ -213,6 +272,7 @@ def _parse_document(document: object) -> PayloadReport:
         samples=samples,
         workouts=len(workouts),
         unknown_formats=tuple(unknown),
+        skipped=skipped,
     )
 
 
