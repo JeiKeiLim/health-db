@@ -10,7 +10,6 @@ pytestmark: requires_pg — disposable postgres:18 container per conftest.
 
 from __future__ import annotations
 
-import json
 import pytest
 
 pytestmark = [pytest.mark.parse_everything, pytest.mark.requires_pg]
@@ -109,14 +108,20 @@ HR_NOTIFICATION = {  # scenario 6 — trimmed real backfill notification shape
         {
             "hrUnits": "count/min",
             "heartRate": 132,
-            "timestamp": {"measurementDuration": 0, "end": "2026-06-16T04:40:29Z", "units": "s", "start": "2026-06-16T04:40:29Z"},
+            "timestamp": {
+                "measurementDuration": 0, "end": "2026-06-16T04:40:29Z",
+                "units": "s", "start": "2026-06-16T04:40:29Z",
+            },
         },
     ],
     "hrvData": [
         {
             "units": "ms",
             "hrv": 27.413754219876544,
-            "timestamp": {"measurementDuration": 59.5, "end": "2026-06-16T04:31:05Z", "units": "s", "start": "2026-06-16T04:30:05Z"},
+            "timestamp": {
+                "measurementDuration": 59.5, "end": "2026-06-16T04:31:05Z",
+                "units": "s", "start": "2026-06-16T04:30:05Z",
+            },
         },
     ],
 }
@@ -130,7 +135,9 @@ def doc_with(group: dict, **extra: object) -> dict:
     return {"data": {"metrics": [group], "workouts": [], **extra}}
 
 
-def doc_lanes(metrics: list | None = None, ecg: list | None = None, hrn: list | None = None) -> dict:
+def doc_lanes(
+    metrics: list | None = None, ecg: list | None = None, hrn: list | None = None
+) -> dict:
     data: dict = {"metrics": metrics or [], "workouts": []}
     if ecg is not None:
         data["ecg"] = ecg
@@ -164,15 +171,19 @@ class TestSleepValueRule:
             "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id) "
             "JOIN source_dim sd USING (source_id) WHERE md.name='sleep_analysis'"
         )
-        assert qty == pytest.approx(6.3746), "Watch night must store totalSleep, not the asleep=0 sentinel"
+        assert qty == pytest.approx(6.3746), (
+            "Watch night must store totalSleep, not the asleep=0 sentinel"
+        )
 
     def test_scenario2_mixed_stage_night_stores_totalsleep(self, api, pg):
         api.post_metric_raw("sleep_analysis", "hr", MIXED_STAGE_NIGHT)
         qty = pg.scalar(
-            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id) WHERE md.name='sleep_analysis'"
+            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='sleep_analysis'"
         )
         assert qty == pytest.approx(8.268799999999999), (
-            "mixed-stage night: totalSleep wins (core+deep+rem alone = 6.2188 loses the real asleep stage)"
+            "mixed-stage night: totalSleep wins"
+            " (core+deep+rem alone = 6.2188 loses the real asleep stage)"
         )
 
     def test_scenario3_nap_and_night_coexist(self, api, pg):
@@ -224,10 +235,12 @@ class TestSleepInBed:
         point = {**WATCH_NIGHT, "inBed": 7.5}
         api.post_metric_raw("sleep_analysis", "hr", point)
         n_sleep = pg.scalar(
-            "SELECT count(*) FROM raw_samples rs JOIN metric_dim md USING (metric_id) WHERE md.name='sleep_analysis'"
+            "SELECT count(*) FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='sleep_analysis'"
         )
         n_inbed = pg.scalar(
-            "SELECT count(*) FROM raw_samples rs JOIN metric_dim md USING (metric_id) WHERE md.name='sleep_in_bed'"
+            "SELECT count(*) FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='sleep_in_bed'"
         )
         assert n_sleep == 1 and n_inbed == 1, "stages + inBed: both rows emitted"
 
@@ -292,7 +305,8 @@ class TestUnitConversion:
     def test_scenario7_lb_converts_to_kg(self, api, pg):
         api.post_metric(name="weight_body_mass", units="lb", qty=160.0)
         row = pg.row(
-            "SELECT rs.qty, rs.ts FROM raw_samples rs JOIN metric_dim md USING (metric_id) WHERE md.name='weight_body_mass'"
+            "SELECT rs.qty, rs.ts FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='weight_body_mass'"
         )
         assert row["qty"] == pytest.approx(72.5748655, abs=1e-4), "160 lb → 72.57 kg via ÷2.20462"
         canonical = pg.scalar("SELECT canonical_unit FROM metric_dim WHERE name='weight_body_mass'")
@@ -301,7 +315,8 @@ class TestUnitConversion:
     def test_scenario7_kj_converts_unchanged(self, api, pg):
         api.post_metric(name="active_energy", units="kJ", qty=418.4)
         qty = pg.scalar(
-            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id) WHERE md.name='active_energy'"
+            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='active_energy'"
         )
         assert qty == pytest.approx(100.0), "kJ→kcal existing conversion intact"
 
@@ -309,7 +324,10 @@ class TestUnitConversion:
         import json as _json
 
         payload = {"data": {"metrics": [
-            {"name": "weight_body_mass", "units": "st", "data": [{"qty": 11.8, "date": "2026-09-08 09:00:00 +0900"}]}
+            {
+                "name": "weight_body_mass", "units": "st",
+                "data": [{"qty": 11.8, "date": "2026-09-08 09:00:00 +0900"}],
+            }
         ], "workouts": []}}
         res = api._client.post(
             "/api/ingest", content=_json.dumps(payload).encode("utf-8"), headers=api._headers
@@ -335,16 +353,23 @@ class TestRepairAndRecognition:
         assert pg.scalar("SELECT qty FROM raw_samples") == 0.0
         api.replay_dir(archive.root, force=True)
         qty = pg.scalar(
-            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id) WHERE md.name='sleep_analysis'"
+            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='sleep_analysis'"
         )
-        assert qty == pytest.approx(6.3746), "force-replay re-normalizes archived payload → real value"
+        assert qty == pytest.approx(6.3746), (
+            "force-replay re-normalizes archived payload → real value"
+        )
 
     def test_scenario9_no_totalsleep_shape_recognized(self, api, pg):
         api.post_metric_raw("sleep_analysis", "hr", NO_TOTALSLEEP_SHAPE)
         qty = pg.scalar(
-            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id) WHERE md.name='sleep_analysis'"
+            "SELECT qty FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='sleep_analysis'"
         )
-        assert qty == 7.0, "{date, asleep, core, deep, rem} without totalSleep must normalize (asleep wins), not drop"
+        assert qty == 7.0, (
+            "{date, asleep, core, deep, rem} without totalSleep"
+            " must normalize (asleep wins), not drop"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +412,9 @@ class TestMcpTools:
 
         schema = queries.schema_resource(pool=pg.pool)
         tables = {t["name"] for t in schema["tables"]}
-        assert {"ecgs", "ecg_voltages", "heart_rate_notifications", "heart_rate_notification_samples"} <= tables
+        assert {
+            "ecgs", "ecg_voltages", "heart_rate_notifications", "heart_rate_notification_samples",
+        } <= tables
 
 
 # ---------------------------------------------------------------------------
@@ -419,8 +446,16 @@ class TestAntiScenarios:
         """Anti-scenario 1: every posted point yields a row or a skipped entry."""
         import json as _json
 
-        point = {"date": "2026-09-08 00:00:00 +0900", "asleep": 0, "inBed": 0, "core": 0, "deep": 0, "rem": 0, "totalSleep": 0}
-        payload = {"data": {"metrics": [{"name": "sleep_analysis", "units": "hr", "data": [point]}], "workouts": []}}
+        point = {
+            "date": "2026-09-08 00:00:00 +0900", "asleep": 0, "inBed": 0,
+            "core": 0, "deep": 0, "rem": 0, "totalSleep": 0,
+        }
+        payload = {
+            "data": {
+                "metrics": [{"name": "sleep_analysis", "units": "hr", "data": [point]}],
+                "workouts": [],
+            }
+        }
         res = api._client.post(
             "/api/ingest", content=_json.dumps(payload).encode("utf-8"), headers=api._headers
         )
@@ -432,9 +467,12 @@ class TestAntiScenarios:
 
     def test_migration_0002_additive_only(self):
         """Anti-scenario 6: 0002 must not touch existing tables."""
-        sql = (Path(__file__).resolve().parents[2] / "migrations" / "0002_parse_everything.sql").read_text()
+        path = Path(__file__).resolve().parents[2] / "migrations" / "0002_parse_everything.sql"
+        sql = path.read_text()
         upper = sql.upper()
-        assert "ALTER TABLE" not in upper and "DROP TABLE" not in upper, "additive CREATE TABLE only"
+        assert "ALTER TABLE" not in upper and "DROP TABLE" not in upper, (
+            "additive CREATE TABLE only"
+        )
         assert "CREATE TABLE" in upper
 
 

@@ -40,6 +40,7 @@ addopts = "-q"
 markers = [
     "slice1: slice-1 ingest-validation acceptance tests",
     "slice2: slice-2 database/MCP acceptance tests",
+    "parse_everything: parse-everything run (2026-09-17-normalizer-audit) acceptance tests",
     "requires_pg: test needs a disposable PostgreSQL container",
 ]
 
