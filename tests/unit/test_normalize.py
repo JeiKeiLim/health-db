@@ -2,10 +2,16 @@
 
 Covers decomposition job slice-2-normalize acceptance: every documented
 data-point shape (plain qty, heart_rate Avg, blood-pressure split, sleep
-aggregated asleep-preference, sleep unaggregated), the unit policy
+aggregated totalSleep-precedence, sleep unaggregated), the unit policy
 (canonical match, kJ→kcal ÷ 4.184, non-canonical skip, pass-through),
 KST day computation (fixed +9h, midnight boundary), and workout
 normalization (kJ→kcal energies, heartRateData, route rows).
+
+Run 2026-09-17-normalizer-audit additions: the sleep value rule matrix
+(Watch asleep:0 sentinel → totalSleep, mixed-stage nights, AutoSleep naps,
+in-bed split to sleep_in_bed, loosened no-totalSleep recognition, all-zero
+skip accounting), fixture-locked to the census in
+tests/acceptance/parse_everything.py.
 """
 
 from __future__ import annotations
@@ -20,6 +26,8 @@ from health_db.normalize import (
     BLOOD_PRESSURE_SYSTOLIC,
     CUMULATIVE_UNITS,
     KJ_PER_KCAL,
+    SLEEP_IN_BED,
+    SLEEP_NO_VALUE,
     SampleRow,
     WorkoutRow,
     _qty_of,
@@ -29,6 +37,7 @@ from health_db.normalize import (
     display_name,
     is_cumulative_unit,
     metric_rows,
+    metric_rows_detailed,
     workout_rows,
 )
 
@@ -358,7 +367,8 @@ class TestBloodPressureSplit:
 
 
 # ---------------------------------------------------------------------------
-# Special shape: sleep_analysis aggregated (asleep-preference)
+# Special shape: sleep_analysis aggregated (totalSleep-precedence, run
+# 2026-09-17-normalizer-audit) + in-bed split + skip accounting
 # ---------------------------------------------------------------------------
 
 
@@ -375,26 +385,260 @@ def sleep_agg(**overrides: object) -> dict:
     return base
 
 
+# Fixture matrix mirrored verbatim from tests/acceptance/parse_everything.py
+# (census-locked real-corpus subsets; scenario numbers refer to that file).
+WATCH_NIGHT = {
+    "date": "2026-09-17 00:00:00 +0900",
+    "source": "Jongkuk의 Apple Watch",
+    "asleep": 0,
+    "inBed": 0,
+    "awake": 0.05,
+    "core": 3.5891,
+    "deep": 1.0473,
+    "rem": 1.7382,
+    "totalSleep": 6.3746,
+    "sleepStart": "2026-09-16 22:11:12 +0900",
+    "sleepEnd": "2026-09-17 04:58:30 +0900",
+}
+
+MIXED_STAGE_NIGHT = {
+    "date": "2024-10-09 00:00:00 +0900",
+    "source": "Jongkuk의 Apple Watch",
+    "asleep": 2.05,
+    "inBed": 0,
+    "awake": 0.4167,
+    "core": 3.1875,
+    "deep": 1.0938,
+    "rem": 1.9375,
+    "totalSleep": 8.268799999999999,
+    "sleepStart": "2024-10-08 21:50:00 +0900",
+    "sleepEnd": "2024-10-09 06:20:00 +0900",
+}
+
+AUTOSLEEP_NAP = {
+    "date": "2026-09-17 00:00:00 +0900",
+    "source": "AutoSleep",
+    "asleep": 0.5833333333333334,
+    "inBed": 0.5833333333333334,
+    "awake": 0,
+    "core": 0,
+    "deep": 0,
+    "rem": 0,
+    "totalSleep": 0.5833333333333334,
+    "sleepStart": "2026-09-16 17:35:00 +0900",
+    "sleepEnd": "2026-09-16 18:10:00 +0900",
+}
+
+INBED_ONLY = {
+    "date": "2018-04-02 00:00:00 +0900",
+    "source": "시계",
+    "asleep": 0,
+    "inBed": 7.332222222222223,
+    "awake": 0,
+    "core": 0,
+    "deep": 0,
+    "rem": 0,
+    "totalSleep": 0,
+    "sleepStart": "2018-04-02 00:15:08 +0900",
+    "sleepEnd": "2018-04-02 07:35:04 +0900",
+}
+
+NO_TOTALSLEEP_SHAPE = {
+    "date": "2026-09-08",
+    "asleep": 7.0,
+    "core": 3.5,
+    "deep": 1.5,
+    "rem": 2.0,
+}
+
+
 class TestSleepAggregated:
-    def test_asleep_wins_when_present(self):
+    def test_totalsleep_wins_over_asleep(self):
+        # Re-derived (run spec §1): totalSleep has absolute precedence when
+        # > 0 — the old asleep-preference test (7.5 total + 6.8 asleep →
+        # 6.8) is superseded; 49/50 mixed-stage backfill nights have
+        # totalSleep == core+deep+rem+asleep exactly.
         rows = metric_rows(doc([metric("sleep_analysis", [sleep_agg()], units="hr")]))
         assert len(rows) == 1
-        assert rows[0].qty == 6.8
+        assert rows[0].qty == 7.5
         assert rows[0].ts == datetime(2026, 9, 8, 0, 0, tzinfo=KST)
 
-    def test_core_deep_rem_sum_when_asleep_absent(self):
-        rows = metric_rows(doc([metric("sleep_analysis", [sleep_agg(asleep=None)], units="hr")]))
+    def test_asleep_wins_when_totalsleep_absent(self):
+        # The no-totalSleep shape (scenario 9): asleep carries the value.
+        rows = metric_rows(
+            doc([metric("sleep_analysis", [sleep_agg(totalSleep=None)], units="hr")])
+        )
+        assert rows[0].qty == 6.8
+
+    def test_core_deep_rem_sum_when_asleep_and_totalsleep_zero(self):
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "sleep_analysis",
+                        [sleep_agg(totalSleep=0, asleep=0)],
+                        units="hr",
+                    )
+                ]
+            )
+        )
         assert rows[0].qty == pytest.approx(5.7)
 
-    def test_missing_rem_skips_when_no_asleep(self):
+    def test_missing_rem_skips_when_no_other_value(self):
         rows = metric_rows(
-            doc([metric("sleep_analysis", [sleep_agg(asleep=None, rem=None)], units="hr")])
+            doc(
+                [
+                    metric(
+                        "sleep_analysis",
+                        [sleep_agg(totalSleep=None, asleep=None, rem=None)],
+                        units="hr",
+                    )
+                ]
+            )
         )
         assert rows == []
 
     def test_unparseable_date_skips(self):
         rows = metric_rows(doc([metric("sleep_analysis", [sleep_agg(date="nope")], units="hr")]))
         assert rows == []
+
+    def test_missing_date_skips(self):
+        # Loosened dispatch still requires `date`.
+        rows = metric_rows(
+            doc([metric("sleep_analysis", [sleep_agg(date=None)], units="hr")])
+        )
+        assert rows == []
+
+
+class TestSleepFixtureMatrix:
+    """The 7 real-corpus fixture shapes (census-locked acceptance parity).
+
+    Mirrors TestSleepValueRule / TestSleepInBed in
+    tests/acceptance/parse_everything.py at the pure-normalizer level.
+    """
+
+    def test_watch_night_asleep_sentinel_stores_totalsleep(self):
+        # Scenario 1: asleep:0 is the REST Watch sentinel (1,150/1,200
+        # backfill nights) — it must never be stored as the value.
+        rows, skips = metric_rows_detailed(
+            doc([metric("sleep_analysis", [WATCH_NIGHT], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 6.3746)
+        ]
+        assert skips == {}
+
+    def test_mixed_stage_night_totalsleep_not_stage_sum(self):
+        # Scenario 2: totalSleep 8.2687… wins; core+deep+rem (6.2188) would
+        # lose the real asleep stage (2.05).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [MIXED_STAGE_NIGHT], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [("sleep_analysis", 8.268799999999999)]
+
+    def test_autosleep_nap_asleep_value(self):
+        # Scenario 3: AutoSleep nap → asleep 0.5833…. The nap row also
+        # carries inBed == asleep (real AutoSleep shape): the in-bed split
+        # emits BOTH rows (in-bed time is independent of stage totals).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [AUTOSLEEP_NAP], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 0.5833333333333334),
+            (SLEEP_IN_BED, 0.5833333333333334),
+        ]
+
+    def test_inbed_only_becomes_sleep_in_bed(self):
+        # Scenario 4: zero sleep_analysis rows; one sleep_in_bed row.
+        rows, skips = metric_rows_detailed(
+            doc([metric("sleep_analysis", [INBED_ONLY], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [(SLEEP_IN_BED, 7.332222222222223)]
+        assert skips == {}, "in-bed split is a legitimate row, not a skipped point"
+
+    def test_no_totalsleep_shape_recognized(self):
+        # Scenario 9: {date, asleep, core, deep, rem} without totalSleep —
+        # loosened dispatch recognizes it; asleep wins (7.0).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [NO_TOTALSLEEP_SHAPE], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [("sleep_analysis", 7.0)]
+
+    def test_all_zero_point_skipped_and_counted(self):
+        # Anti-scenario: every sleep field 0 and inBed 0 → no row, and the
+        # skip must be visible for job-4's response accounting.
+        point = {
+            "date": "2026-09-08 00:00:00 +0900",
+            "asleep": 0,
+            "inBed": 0,
+            "core": 0,
+            "deep": 0,
+            "rem": 0,
+            "totalSleep": 0,
+        }
+        rows, skips = metric_rows_detailed(doc([metric("sleep_analysis", [point], units="hr")]))
+        assert rows == []
+        assert skips == {SLEEP_NO_VALUE: 1}
+
+    def test_inbed_plus_stages_emits_both_rows(self):
+        # In-bed time is independent of stage totals: both rows emitted.
+        point = {**WATCH_NIGHT, "inBed": 7.5}
+        rows, _ = metric_rows_detailed(doc([metric("sleep_analysis", [point], units="hr")]))
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 6.3746),
+            (SLEEP_IN_BED, 7.5),
+        ]
+
+    def test_nap_inbed_matches_asleep_emits_both(self):
+        # AutoSleep nap rows carry inBed == asleep: sleep_analysis keeps the
+        # nap value AND the in-bed row is emitted (independent surfaces).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [AUTOSLEEP_NAP], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 0.5833333333333334),
+            (SLEEP_IN_BED, 0.5833333333333334),
+        ]
+
+
+class TestSleepInBedRegistration:
+    def test_display_name(self):
+        assert display_name(SLEEP_IN_BED) == "Sleep In-Bed"
+
+    def test_not_in_canonical_units(self):
+        # Pass-through unit policy: sleep_in_bed must NOT join
+        # CANONICAL_UNITS (spec §1; declared unit 'hr' passes through).
+        assert canonical_unit_of(SLEEP_IN_BED) is None
+
+    def test_in_bed_row_carries_declared_unit(self):
+        rows, _ = metric_rows_detailed(doc([metric("sleep_analysis", [INBED_ONLY], units="hr")]))
+        assert rows[0].unit == "hr"
+
+    def test_is_cumulative_seeds_from_hr(self):
+        assert is_cumulative_unit("hr") is True
+
+
+class TestMetricRowsDetailedSkips:
+    """The job-4 seam: skip counts surface without changing the row contract."""
+
+    def test_metric_rows_unchanged_contract(self):
+        rows = metric_rows(doc([metric("sleep_analysis", [WATCH_NIGHT], units="hr")]))
+        assert [(r.name, r.qty) for r in rows] == [("sleep_analysis", 6.3746)]
+
+    def test_detailed_returns_always_present_dict(self):
+        _, skips = metric_rows_detailed(doc([metric("step_count", [])]))
+        assert skips == {}
+
+    def test_unrecognized_shape_not_counted_here(self):
+        # Partial-overlap shapes are payloads.py's unknown_formats concern;
+        # this counter only owns recognized-but-valueless sleep points.
+        _, skips = metric_rows_detailed(doc([metric("blood_pressure", [{"systolic": 120}])]))
+        assert skips == {}
+
+    def test_mixed_points_counted_individually(self):
+        points = [WATCH_NIGHT, INBED_ONLY, {"date": "2026-09-08", "totalSleep": 0, "asleep": 0}]
+        _, skips = metric_rows_detailed(doc([metric("sleep_analysis", points, units="hr")]))
+        assert skips == {SLEEP_NO_VALUE: 1}
 
 
 # ---------------------------------------------------------------------------

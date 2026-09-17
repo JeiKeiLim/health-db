@@ -381,6 +381,11 @@ class TestUnknownFormatDetection:
 
 # ---------------------------------------------------------------------------
 # Full-key-set shape recognition: partial overlap → unknown_formats
+#
+# Run 2026-09-17-normalizer-audit §1: the sleep aggregated shape is the one
+# documented exception — it recognizes on a SUFFICIENT key set ({date} + any
+# sleep field), not a full key set. Everything else keeps full-key-set
+# recognition.
 # ---------------------------------------------------------------------------
 
 
@@ -405,8 +410,38 @@ class TestPartialKeyOverlapNotRecognized:
         report = parse(wrap([metric("heart_rate", [{"Min": 60, "Max": 90, "date": DATE}])]))
         assert len(report.unknown_formats) == 1
 
-    def test_sleep_aggregated_partial_keys_unknown(self):
+    def test_sleep_aggregated_loosened_keys_recognized(self):
+        # Run 2026-09-17-normalizer-audit §1: recognition loosened to the
+        # sufficient-key-set rule — {date} + ANY sleep field is enough;
+        # totalSleep is no longer required (scenario 9 archive shape).
         report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08", "asleep": 7.0}])]))
+        assert report.unknown_formats == ()
+        assert report.samples == 1
+
+    def test_sleep_date_plus_sleepstart_only_recognized(self):
+        # sleepStart alone (no value fields) is a recognized sleep shape.
+        report = parse(
+            wrap(
+                [
+                    metric(
+                        "sleep_analysis",
+                        [{"date": "2026-09-08", "sleepStart": "2026-09-07 23:00:00 +0900"}],
+                    )
+                ]
+            )
+        )
+        assert report.unknown_formats == ()
+
+    def test_sleep_valueless_shape_still_counts_as_sample(self):
+        # Recognition ≠ a row: {date, totalSleep: 0} counts as a sample and
+        # normalize yields no row — skip accounting is the normalizer's job.
+        report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08", "totalSleep": 0}])]))
+        assert report.unknown_formats == ()
+        assert report.samples == 1
+
+    def test_sleep_date_without_any_sleep_field_is_unknown(self):
+        # {date} alone (no sleep-field overlap) stays unrecognized.
+        report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08"}])]))
         assert len(report.unknown_formats) == 1
 
     def test_sleep_unaggregated_missing_value_is_unknown(self):

@@ -18,9 +18,15 @@ Policies (ported from predecessor; iron laws 4/5):
   ``unit in CUMULATIVE_UNITS`` (predecessor ``constants.py`` parity).
 - Special shapes: heart_rate → qty = ``Avg``; blood_pressure → two rows
   (``blood_pressure_systolic`` / ``blood_pressure_diastolic``);
-  sleep_analysis aggregated → one row per day, qty = ``asleep`` when
-  present else ``core+deep+rem`` (AutoSleep-wins parity with TASK-005);
-  sleep_analysis unaggregated → one row per segment.
+  sleep_analysis aggregated → one row per day, value precedence
+  ``totalSleep>0`` → ``asleep>0`` → ``core+deep+rem`` → inBed>0 → a
+  ``sleep_in_bed`` row → skip (run 2026-09-17-normalizer-audit: the REST
+  Watch sentinel is ``asleep: 0`` on 1,150/1,200 backfill nights while
+  49/50 mixed-stage nights carry a REAL asleep stage with
+  ``totalSleep = core+deep+rem+asleep`` exactly, so ``totalSleep`` has
+  absolute precedence and ``asleep: 0`` is never a value — see run
+  research/predecessor-inventory.md); sleep_analysis unaggregated → one
+  row per segment.
 - ``day_kst`` uses a FIXED UTC+9 offset (KST has no DST) — never a named
   timezone, never server-local time.
 
@@ -93,6 +99,29 @@ BLOOD_PRESSURE_DIASTOLIC = "blood_pressure_diastolic"
 BP_DISPLAY_SYSTOLIC = "Blood Pressure Systolic"
 BP_DISPLAY_DIASTOLIC = "Blood Pressure Diastolic"
 
+# In-bed sleep metric (run 2026-09-17-normalizer-audit): in-bed hours with no
+# stage data (2018-era 시계/iPhone rows, 520/2,500 backfill rows) land here
+# instead of polluting sleep_analysis with zero rows. Plain pass-through
+# metric — deliberately NOT in CANONICAL_UNITS.
+SLEEP_IN_BED = "sleep_in_bed"
+SLEEP_IN_BED_DISPLAY = "Sleep In-Bed"
+
+# Skip reason for sleep-shaped points that carry no sleep value at all
+# (every field 0/absent and inBed 0/absent). Counted by job-4's
+# `skipped.sleep_no_value` ingest-response accounting (run spec §5) — the
+# zero-silent-drops contract. Never counted as `unrecognized_shape`: the
+# shape IS recognized; the point simply carries no value.
+SLEEP_NO_VALUE = "sleep_no_value"
+
+# Sleep-field key sets (run 2026-09-17-normalizer-audit §1): a point is
+# sleep-shaped when it carries `date` plus ANY sleep field. totalSleep is no
+# longer required — the archive corpus contains {date, asleep, core, deep,
+# rem} rows without it (scenario 9). sleepStart alone (no values) is also a
+# recognized sleep shape; it yields no row and counts as sleep_no_value.
+_SLEEP_FIELD_KEYS = frozenset(
+    {"totalSleep", "asleep", "core", "deep", "rem", "inBed", "sleepStart"}
+)
+
 # Human-readable display names (predecessor constants.py:21-102 port;
 # snake_case → CamelCase). Extended with the blood-pressure splits.
 DISPLAY_NAMES: dict[str, str] = {
@@ -153,6 +182,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "selenium": "Selenium",
     "six_minute_walking_test_distance": "Six-Minute Walking Test Distance",
     "sleep_analysis": "Sleep Analysis",
+    "sleep_in_bed": "Sleep In-Bed",
     "sodium": "Sodium",
     "stair_speed_down": "Stair Speed: Down",
     "stair_speed_up": "Stair Speed: Up",
@@ -419,19 +449,47 @@ def _rows_for_point(group: dict[str, object], point: dict[str, object]) -> Itera
         yield SampleRow(name, source, ts, qty, declared_unit)
         return
 
-    if "totalSleep" in keys:
-        # Sleep aggregated (day-level): asleep-preference, else core+deep+rem.
+    if "date" in keys and keys & _SLEEP_FIELD_KEYS:
+        # Sleep aggregated (day-level), run 2026-09-17-normalizer-audit §1.
+        # Dispatch requires only `date` + ANY sleep field — totalSleep is no
+        # longer mandatory (scenario 9: {date, asleep, core, deep, rem} rows
+        # exist in the archive corpus without it). Common {qty, date} and
+        # unaggregated {startDate, endDate, qty} keep their earlier
+        # precedence above.
         ts = _parse_ts(point.get("date"))
         if ts is None:
             return
-        asleep = _num(point.get("asleep"))
-        if asleep is not None:
-            yield SampleRow(name, source, ts, asleep, declared_unit)
-            return
-        parts = [_num(point.get(part)) for part in ("core", "deep", "rem")]
-        if any(part is None for part in parts):
-            return
-        yield SampleRow(name, source, ts, sum(parts), declared_unit)  # type: ignore[arg-type]
+        # Value precedence (research/predecessor-inventory.md — universal
+        # rule, verified outcomes cited per clause):
+        #   totalSleep>0 wins absolutely: 1,150/1,200 Watch nights carry the
+        #   asleep:0 sentinel (storing asleep would yield 0.0) and 50/50
+        #   mixed-stage nights have totalSleep == core+deep+rem+asleep
+        #   exactly, so asleep is a REAL STAGE there — it must neither
+        #   override totalSleep (would double count) nor be summed with the
+        #   stages (loses it).
+        total_sleep = _num(point.get("totalSleep"))
+        if total_sleep is not None and total_sleep > 0:
+            yield SampleRow(name, source, ts, total_sleep, declared_unit)
+        else:
+            # asleep>0 next: AutoSleep nap rows carry asleep only (nap
+            # 0.5833…). The 0-sentinel on Watch rows never wins.
+            asleep = _num(point.get("asleep"))
+            if asleep is not None and asleep > 0:
+                yield SampleRow(name, source, ts, asleep, declared_unit)
+            else:
+                # core+deep+rem last: all three present and summing > 0.
+                parts = [_num(point.get(part)) for part in ("core", "deep", "rem")]
+                if all(part is not None for part in parts) and sum(parts) > 0:
+                    yield SampleRow(name, source, ts, sum(parts), declared_unit)  # type: ignore[arg-type]
+        # In-bed split (independent of the value rule above): inBed hours
+        # are wall-clock bed time, never sleep, so they NEVER land in
+        # sleep_analysis — a stage/total value above may coexist with an
+        # inBed>0 row (test_inbed_plus_stages_emits_both). 520/2,500
+        # backfill rows + 1 recent row are in-bed-only: they emit ONLY the
+        # sleep_in_bed row below and zero sleep_analysis rows.
+        in_bed = _num(point.get("inBed"))
+        if in_bed is not None and in_bed > 0:
+            yield SampleRow(SLEEP_IN_BED, source, ts, in_bed, declared_unit)
         return
 
     # Unrecognized shape: reported upstream (payloads unknown_formats);
@@ -446,14 +504,33 @@ def metric_rows(document: object) -> list[SampleRow]:
     than raising — envelope validation already happened upstream, and a
     partially-bad payload must still normalize its good parts.
     """
+    return metric_rows_detailed(document)[0]
+
+
+def metric_rows_detailed(
+    document: object,
+) -> tuple[list[SampleRow], dict[str, int]]:
+    """Normalize ``data.metrics`` into SampleRows + a skip-reason census.
+
+    The returned dict counts every dropped point under its reason key
+    (run spec §5 — zero-silent-drops contract). Key ``sleep_no_value``
+    counts sleep-shaped points whose every sleep field is 0/absent AND
+    whose inBed is 0/absent: the point is recognized but carries no sleep
+    value at all, so no row exists for it. The dict is always present
+    (empty when nothing was skipped); keys are frozen by spec §5, and
+    other lanes (unit_unconvertible / unrecognized_shape / ecg /
+    notification) are counted by their own jobs — this function only
+    reports its own. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
     if not isinstance(document, dict):
-        return []
+        return [], skips
     data = document.get("data")
     if not isinstance(data, dict):
-        return []
+        return [], skips
     metrics = data.get("metrics")
     if not isinstance(metrics, list):
-        return []
+        return [], skips
 
     rows: list[SampleRow] = []
     for group in metrics:
@@ -464,8 +541,25 @@ def metric_rows(document: object) -> list[SampleRow]:
             continue
         for point in points:
             if isinstance(point, dict):
-                rows.extend(_rows_for_point(group, point))
-    return rows
+                emitted = list(_rows_for_point(group, point))
+                if _is_sleep_point(point) and not any(r.name != SLEEP_IN_BED for r in emitted):
+                    # No sleep_analysis row came out of a recognized sleep
+                    # point: either it is in-bed-only (a legit split, no
+                    # skip) or it carried no value at all (counted).
+                    if not any(r.name == SLEEP_IN_BED for r in emitted):
+                        skips[SLEEP_NO_VALUE] = skips.get(SLEEP_NO_VALUE, 0) + 1
+                rows.extend(emitted)
+    return rows, skips
+
+
+def _is_sleep_point(point: dict[str, object]) -> bool:
+    """True when a point has `date` plus at least one sleep field.
+
+    Mirrors the aggregated-sleep dispatch guard in :func:`_rows_for_point`
+    so skip accounting can classify points the branch recognized.
+    """
+    keys = point.keys()
+    return "date" in keys and bool(keys & _SLEEP_FIELD_KEYS)
 
 
 def _energy_kcal(value: object) -> float | None:

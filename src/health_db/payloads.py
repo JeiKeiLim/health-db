@@ -33,8 +33,11 @@ alone or ``{Avg}`` alone) does NOT count and is reported as unknown:
 - sleep_analysis unaggregated: ``{startDate, endDate, qty, value, ...}``.
 - heart_rate: ``{Min, Avg, Max, ...}`` (no qty; Avg is the canonical value).
 - blood_pressure: ``{systolic, diastolic, ...}`` (no qty).
-- sleep_analysis aggregated: ``{totalSleep, asleep, core, deep, rem, ...}``
-  (day-level, no qty).
+- sleep_analysis aggregated: ``{date, ...sleep fields...}`` where ANY of
+  ``totalSleep/asleep/core/deep/rem/inBed/sleepStart`` alongside ``date``
+  suffices (day-level, no qty; run 2026-09-17-normalizer-audit §1 —
+  totalSleep is no longer required, the archive corpus carries
+  ``{date, asleep, core, deep, rem}`` rows without it).
 
 Counting semantics (receipt counts, per decomposition job slice-1-payloads):
 
@@ -70,7 +73,12 @@ _COMMON_KEYS = frozenset({"qty", "date"})
 _SLEEP_UNAGGREGATED_KEYS = frozenset({"qty", "value", "startDate", "endDate"})
 _BLOOD_PRESSURE_KEYS = frozenset({"systolic", "diastolic"})
 _HEART_RATE_KEYS = frozenset({"Min", "Avg", "Max"})
-_SLEEP_AGGREGATED_KEYS = frozenset({"totalSleep", "asleep", "core", "deep", "rem"})
+# Sufficient-key-set rule (run 2026-09-17-normalizer-audit §1): recognition =
+# keys ⊇ {date} ∧ ∩ sleep field set ≠ ∅ (the unaggregated/common shapes keep
+# their earlier precedence). totalSleep alone is no longer required.
+_SLEEP_FIELD_KEYS = frozenset(
+    {"totalSleep", "asleep", "core", "deep", "rem", "inBed", "sleepStart"}
+)
 
 
 class MalformedPayload(ValueError):
@@ -113,7 +121,7 @@ def _point_shape(point: object) -> str | None:
         return "blood_pressure"
     if _HEART_RATE_KEYS <= keys:
         return "heart_rate"
-    if _SLEEP_AGGREGATED_KEYS <= keys:
+    if "date" in keys and keys & _SLEEP_FIELD_KEYS:
         return "sleep_analysis_aggregated"
     return None
 
