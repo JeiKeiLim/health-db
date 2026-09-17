@@ -26,10 +26,14 @@ from health_db.normalize import (
     BLOOD_PRESSURE_SYSTOLIC,
     CUMULATIVE_UNITS,
     KJ_PER_KCAL,
+    LB_PER_KG,
     SLEEP_IN_BED,
     SLEEP_NO_VALUE,
+    ST_PER_KG,
+    UNIT_UNCONVERTIBLE,
     SampleRow,
     WorkoutRow,
+    _qty_for_unit,
     _qty_of,
     _sum_qty_of,
     canonical_unit_of,
@@ -195,20 +199,101 @@ class TestPlainQty:
         assert rows[0].source == "unknown"
 
 
-class TestCanonicalUnitSkip:
-    def test_weight_in_lb_is_skipped_not_converted(self):
+class TestCanonicalUnitConversion:
+    """Iron-law-4 amendment (run 2026-09-17-normalizer-audit §4, user-approved):
+    canonical metrics with a non-canonical declared unit are CONVERTED when
+    an exact factor exists; only units with no factor are skipped — visibly."""
+
+    def test_lb_converts_to_kg_exact_factor(self):
+        decision = _qty_for_unit("weight_body_mass", "lb", 160.0)
+        assert decision.skip_reason is None
+        # 160 / 2.20462 = 72.5748655097… (spec §4 factor ÷ 2.20462).
+        assert decision.row == pytest.approx((72.5748655, "kg"), abs=1e-6)
         rows = metric_rows(
             doc(
                 [
                     metric(
                         "weight_body_mass",
-                        [{"qty": 150, "date": "2026-09-08 10:00:00 +0900"}],
+                        [{"qty": 160, "date": "2026-09-08 10:00:00 +0900"}],
                         units="lb",
                     )
                 ]
             )
         )
+        assert rows[0].qty == pytest.approx(72.5748655)
+        assert rows[0].unit == "kg"
+
+    def test_st_converts_to_kg_exact_factor(self):
+        decision = _qty_for_unit("weight_body_mass", "st", 11.8)
+        assert decision.skip_reason is None
+        # 11.8 / 0.157473 = 74.9334806602… (spec §4 factor ÷ 0.157473).
+        assert decision.row == pytest.approx((74.9334807, "kg"), abs=1e-6)
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "weight_body_mass",
+                        [{"qty": 11.8, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="st",
+                    )
+                ]
+            )
+        )
+        assert rows[0].qty == pytest.approx(74.9334807)
+        assert rows[0].unit == "kg"
+
+    def test_degf_converts_to_degc_wrist_temperature_only(self):
+        decision = _qty_for_unit("apple_sleeping_wrist_temperature", "degF", 95.5)
+        assert decision.skip_reason is None
+        assert decision.row == pytest.approx((35.27777777777778, "degC"), abs=1e-9)
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "apple_sleeping_wrist_temperature",
+                        [{"qty": 95.5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="degF",
+                    )
+                ]
+            )
+        )
+        assert rows[0].qty == pytest.approx(35.27777777777778)
+        assert rows[0].unit == "degC"
+
+    def test_degf_not_converted_for_other_metrics(self):
+        # °F factor is pinned to the wrist-temperature metric only.
+        rows, skips = metric_rows_detailed(
+            doc(
+                [
+                    metric(
+                        "body_fat_percentage",
+                        [{"qty": 95.5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="degF",
+                    )
+                ]
+            )
+        )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
+
+    def test_lean_body_mass_lb_converts(self):
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "lean_body_mass",
+                        [{"qty": 100, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="lb",
+                    )
+                ]
+            )
+        )
+        assert rows[0].qty == pytest.approx(100 / 2.20462)
+        assert rows[0].unit == "kg"
+
+    def test_constants_are_exact_factors(self):
+        assert LB_PER_KG == 2.20462
+        assert ST_PER_KG == 0.157473
 
     def test_weight_in_kg_passes(self):
         rows = metric_rows(
@@ -224,37 +309,46 @@ class TestCanonicalUnitSkip:
         )
         assert sample_rows(rows) == [("weight_body_mass", "unknown", 68.0, "kg")]
 
-    @pytest.mark.parametrize("unit", ["st", "lb"])
-    def test_non_canonical_variants_skipped(self, unit: str):
-        rows = metric_rows(
+    def test_unconvertible_unit_skipped_and_counted(self):
+        # A fabricated unit with no exact factor: no row, but the drop is
+        # VISIBLE in the skip census (zero-silent-drops contract, spec §5).
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
                         "weight_body_mass",
-                        [{"qty": 1, "date": "2026-09-08 10:00:00 +0900"}],
-                        units=unit,
+                        [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="gal",
                     )
                 ]
             )
         )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
 
-    def test_temperature_in_degf_skipped(self):
-        rows = metric_rows(
+    def test_unconvertible_unit_direct_gate_reason(self):
+        decision = _qty_for_unit("weight_body_mass", "gal", 5.0)
+        assert decision.row is None
+        assert decision.skip_reason == UNIT_UNCONVERTIBLE
+
+    def test_bad_timestamp_not_counted_as_unit_skip(self):
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
-                        "apple_sleeping_wrist_temperature",
-                        [{"qty": 98.6, "date": "2026-09-08 10:00:00 +0900"}],
-                        units="degF",
+                        "weight_body_mass",
+                        [{"qty": 5, "date": "not-a-date"}],
+                        units="gal",
                     )
                 ]
             )
         )
         assert rows == []
+        assert skips == {}
 
-    def test_distance_in_mi_skipped(self):
-        rows = metric_rows(
+    def test_distance_in_mi_still_skipped(self):
+        # mi has no exact factor in this run: skipped but visibly counted.
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
@@ -266,6 +360,22 @@ class TestCanonicalUnitSkip:
             )
         )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
+
+    def test_pass_through_metric_any_unit_stored(self):
+        rows, skips = metric_rows_detailed(
+            doc(
+                [
+                    metric(
+                        "biotin",
+                        [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="weird",
+                    )
+                ]
+            )
+        )
+        assert sample_rows(rows) == [("biotin", "unknown", 5.0, "weird")]
+        assert skips == {}
 
 
 class TestEnergyKjConversion:

@@ -11,8 +11,14 @@ Policies (ported from predecessor; iron laws 4/5):
 
 - Canonical units (predecessor ``constants.py:104-119``, re-keyed to
   the snake_case metric names stored in ``metric_dim``): a sample whose
-  declared unit does not match its metric's canonical unit is SKIPPED,
-  never converted. The single exception is energy kJ→kcal ÷ 4.184.
+  declared unit does not match its metric's canonical unit is CONVERTED
+  when an exact factor exists (run 2026-09-17-normalizer-audit §4 — the
+  user-approved iron-law-4 amendment): lb→kg ÷ 2.20462, st→kg ÷ 0.157473,
+  °F→°C (°F−32)×5/9 for ``apple_sleeping_wrist_temperature``, and the
+  pre-existing kJ→kcal ÷ 4.184. Converted rows store the canonical unit
+  string. Units with no exact factor are still SKIPPED — but counted as
+  ``unit_unconvertible`` (spec §5 skip accounting), never silent and
+  never stored next to canonical rows.
 - Metrics absent from the canonical map are pass-through: any declared
   unit is accepted, and ``is_cumulative`` seeds as
   ``unit in CUMULATIVE_UNITS`` (predecessor ``constants.py`` parity).
@@ -64,6 +70,15 @@ from datetime import date, datetime, timedelta, timezone
 
 KJ_PER_KCAL = 4.184
 
+# Exact conversion factors (run 2026-09-17-normalizer-audit §4 — iron-law-4
+# amendment, user-approved): canonical-unit metrics declaring one of these
+# units are CONVERTED to the canonical unit, never skipped. Factors are
+# exact by definition (1 lb = 0.45359237 kg, 1 st = 6.35029318 kg; °F→°C is
+# the exact linear scale transform). kJ→kcal ÷ KJ_PER_KCAL predates the
+# amendment and is unchanged.
+LB_PER_KG = 2.20462
+ST_PER_KG = 0.157473
+
 # Canonical unit per metric (predecessor constants.py:104-119, keyed by
 # the snake_case REST names stored in metric_dim). Metrics not listed here
 # are pass-through: any declared unit is accepted.
@@ -84,8 +99,15 @@ CANONICAL_UNITS: dict[str, str] = {
     "apple_sleeping_wrist_temperature": "degC",
 }
 
-# Energy metrics whose canonical unit is kcal — the only metrics ever
-# converted (kJ → kcal ÷ 4.184). Non-kJ, non-kcal declarations are skipped.
+# Energy metrics whose canonical unit is kcal — converted from kJ
+# (kJ → kcal ÷ 4.184). Non-kJ, non-kcal declarations are skipped.
+ENERGY_METRICS = frozenset({"active_energy", "basal_energy_burned", "dietary_energy"})
+
+# Skip-reason key (run spec §5): a canonical-unit metric declared in a unit
+# with NO exact conversion factor is dropped, and the drop is VISIBLE —
+# counted here, surfaced by job-4's PayloadReport.skipped ingest-response
+# accounting. Zero silent drops: every such sample increments this counter.
+UNIT_UNCONVERTIBLE = "unit_unconvertible"
 ENERGY_METRICS = frozenset({"active_energy", "basal_energy_burned", "dietary_energy"})
 
 # Cumulative units (predecessor constants.py parity): metrics whose
@@ -369,20 +391,56 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
-def _qty_for_unit(name: str, declared_unit: str, qty: float) -> tuple[float, str] | None:
-    """Unit-policy gate: canonical match / kJ→kcal conversion / pass-through.
+@dataclass(frozen=True, slots=True)
+class UnitDecision:
+    """Outcome of the unit-policy gate for one sample (pure, no I/O).
 
-    Returns ``(qty, unit)`` to keep, or None when the sample must be SKIPPED
-    (non-canonical unit — iron law 4: never converted, never stored).
+    ``row`` is a ``(qty, unit)`` tuple to store (unit is always the
+    canonical string when a conversion happened); it is None exactly when
+    ``skip_reason`` is set. ``skip_reason`` values are job-4 accounting
+    keys (spec §5) — currently only :data:`UNIT_UNCONVERTIBLE`.
+    """
+
+    row: tuple[float, str] | None
+    skip_reason: str | None = None
+
+
+_UNIT_CONVERSIONS: dict[str, dict[str, tuple[str, float]]] = {
+    # metric → declared unit → (canonical unit, exact factor)
+    "weight_body_mass": {"lb": ("kg", LB_PER_KG), "st": ("kg", ST_PER_KG)},
+    "lean_body_mass": {"lb": ("kg", LB_PER_KG), "st": ("kg", ST_PER_KG)},
+    "apple_sleeping_wrist_temperature": {"degF": ("degC", None)},
+}
+
+
+def _qty_for_unit(name: str, declared_unit: str, qty: float) -> UnitDecision:
+    """Unit-policy gate (iron law 4, amended run 2026-09-17-normalizer-audit).
+
+    Precedence: canonical match keeps the value as-is; a non-canonical
+    declared unit is CONVERTED when an exact factor exists — lb→kg ÷ 2.20462
+    and st→kg ÷ 0.157473 for the mass metrics, °F→°C (°F−32)×5/9 for
+    ``apple_sleeping_wrist_temperature`` only, and the pre-existing
+    kJ→kcal ÷ 4.184 for the energy metrics. Converted rows store the
+    canonical unit string. Units with no exact factor are skipped VISIBLY:
+    the returned decision carries ``skip_reason='unit_unconvertible'`` so
+    the caller can count it (spec §5) instead of dropping silently.
+    Pure: no I/O, no state.
     """
     canonical = CANONICAL_UNITS.get(name)
     if canonical is None:
-        return qty, declared_unit
+        return UnitDecision(row=(qty, declared_unit))
     if declared_unit == canonical:
-        return qty, canonical
+        return UnitDecision(row=(qty, canonical))
     if name in ENERGY_METRICS and declared_unit == "kJ":
-        return qty / KJ_PER_KCAL, "kcal"
-    return None
+        return UnitDecision(row=(qty / KJ_PER_KCAL, "kcal"))
+    conversion = _UNIT_CONVERSIONS.get(name, {}).get(declared_unit)
+    if conversion is not None:
+        target, factor = conversion
+        if factor is None:
+            # °F→°C: exact linear scale transform, wrist temperature only.
+            return UnitDecision(row=((qty - 32) * 5 / 9, target))
+        return UnitDecision(row=(qty / factor, target))
+    return UnitDecision(row=None, skip_reason=UNIT_UNCONVERTIBLE)
 
 
 def _source_of(group: dict[str, object], point: dict[str, object]) -> str:
@@ -412,9 +470,9 @@ def _rows_for_point(group: dict[str, object], point: dict[str, object]) -> Itera
         ts = _parse_ts(point.get("date"))
         if qty is None or ts is None:
             return
-        gated = _qty_for_unit(name, declared_unit, qty)
-        if gated is not None:
-            yield SampleRow(name, source, ts, gated[0], gated[1])
+        decision = _qty_for_unit(name, declared_unit, qty)
+        if decision.row is not None:
+            yield SampleRow(name, source, ts, decision.row[0], decision.row[1])
         return
 
     if "systolic" in keys and "diastolic" in keys:
@@ -517,10 +575,11 @@ def metric_rows_detailed(
     counts sleep-shaped points whose every sleep field is 0/absent AND
     whose inBed is 0/absent: the point is recognized but carries no sleep
     value at all, so no row exists for it. The dict is always present
-    (empty when nothing was skipped); keys are frozen by spec §5, and
-    other lanes (unit_unconvertible / unrecognized_shape / ecg /
-    notification) are counted by their own jobs — this function only
-    reports its own. Pure: no I/O, no state.
+    (empty when nothing was skipped); keys are frozen by spec §5.
+    This function reports ``sleep_no_value`` (its own lane) and
+    ``unit_unconvertible`` (from the unit-policy gate's decisions);
+    ``unrecognized_shape / ecg / notification`` are counted by their own
+    jobs. Pure: no I/O, no state.
     """
     skips: dict[str, int] = {}
     if not isinstance(document, dict):
@@ -539,9 +598,24 @@ def metric_rows_detailed(
         points = group.get("data")
         if not isinstance(points, list):
             continue
+        name = group.get("name")
+        units = group.get("units")
+        declared_unit = units if isinstance(units, str) else str(units)
         for point in points:
             if isinstance(point, dict):
                 emitted = list(_rows_for_point(group, point))
+                if not emitted and "qty" in point.keys() and "date" in point.keys():
+                    # qty/date shape produced no row: bad qty/ts yield
+                    # nothing observable (pre-existing), but a canonical
+                    # metric in an unconvertible unit must be dropped
+                    # VISIBLY — the reason comes from the gate itself
+                    # (spec §5 zero-silent-drops contract).
+                    qty = _num(point.get("qty"))
+                    if qty is not None and _parse_ts(point.get("date")) is not None:
+                        gate_name = name if isinstance(name, str) else ""
+                        decision = _qty_for_unit(gate_name, declared_unit, qty)
+                        if decision.skip_reason is not None:
+                            skips[decision.skip_reason] = skips.get(decision.skip_reason, 0) + 1
                 if _is_sleep_point(point) and not any(r.name != SLEEP_IN_BED for r in emitted):
                     # No sleep_analysis row came out of a recognized sleep
                     # point: either it is in-bed-only (a legit split, no
