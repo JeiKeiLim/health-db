@@ -108,7 +108,6 @@ ENERGY_METRICS = frozenset({"active_energy", "basal_energy_burned", "dietary_ene
 # counted here, surfaced by job-4's PayloadReport.skipped ingest-response
 # accounting. Zero silent drops: every such sample increments this counter.
 UNIT_UNCONVERTIBLE = "unit_unconvertible"
-ENERGY_METRICS = frozenset({"active_energy", "basal_energy_burned", "dietary_energy"})
 
 # Cumulative units (predecessor constants.py parity): metrics whose
 # canonical/declared unit is in this set aggregate with SUM in trends;

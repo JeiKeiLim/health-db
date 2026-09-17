@@ -410,8 +410,8 @@ class TestEnergyKjConversion:
         assert rows[0].qty == 100.0
         assert rows[0].unit == "kcal"
 
-    def test_active_energy_cal_skipped(self):
-        rows = metric_rows(
+    def test_active_energy_cal_skipped_and_counted(self):
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
@@ -423,6 +423,7 @@ class TestEnergyKjConversion:
             )
         )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
 
     def test_conversion_factor_parity(self):
         assert KJ_PER_KCAL == 4.184
