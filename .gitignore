@@ -10,7 +10,6 @@ dist/
 .DS_Store
 
 # personal workflow/agent config — kept local, not part of the project
-.tenet/
 backlog/
 .claude/
 .agents/

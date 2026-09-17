@@ -1,0 +1,266 @@
+# Job Queue
+
+Updated: 2026-09-17T05:13:12.551Z
+
+- [x] FastAPI app + /api/ingest pipeline (slice-1-api) — 5m 42s
+- [x] Verbatim archive store (iron law) (slice-1-archive) — 7m 19s
+- [x] Token auth + audit (slice-1-auth) — 1m 44s
+- [x] Env config module (slice-1-config) — 4m 32s
+- [x] Integration: slice 1 acceptance suite (slice-1-e2e) — 2m 27s
+- [x] HAE JSON v2 parser/validator (slice-1-payloads) — 1m 8s
+- [x] Malformed/oversize failure semantics (slice-1-quarantine) — 10m 14s
+- [x] Project scaffold (uv, pyproject, ruff, .env.example) (slice-1-scaffold) — 7m 38s
+- [x] Stats + health endpoints (slice-1-stats) — 2m 8s
+- [x] health CLI wrapper over query layer (slice-2-cli) — 16m 39s
+- [x] DB foundation: psycopg3 pool, migrations applier, pg container fixture, health DB check (slice-2-db-config) — 15m 13s
+- [x] Docker deploy + perf test + runbook + README (slice-2-deploy) — 5m 5s
+- [x] Integration: slice 2 full acceptance + perf (slice-2-e2e) — 8m 54s
+- [x] Ingest pipeline: normalize→upsert→rollup, 503+pending on DB outage (slice-2-ingest-pipeline) — 1m 36s
+- [x] MCP streamable-http server: query layer, 8 tools, 3 resources, Bearer (slice-2-mcp-server) — 19m 40s
+- [x] Pure normalizer: units policy, special formats, KST day (slice-2-normalize) — 6m 59s
+- [x] Replay tool: health-replay, dir replay, pending queue, idempotent (slice-2-replay) — 29m 23s
+- [x] PG schema migrations + partition maintenance (slice-2-schema) — 13m 49s
+- [x] eval-mtrwu9u6 — 17s
+- [x] eval-mtrwxneb — 1m 13s
+- [x] eval-mts0eb2f — 23s
+- [x] eval-mts0g98l — 23m 23s !! cancelled by user
+- [x] eval-mts0rt1s — 14m 24s
+- [x] eval-mts5v2jq — 1m 59s
+- [x] code_critic for 3ce8fe5f — 2m 48s
+- [x] test_critic for 3ce8fe5f — 1m 39s
+- [-] interaction_e2e for 3ce8fe5f !! cancelled by user
+- [x] security_critic for 3ce8fe5f — 1m 9s
+- [x] data_integrity_critic for 3ce8fe5f — 1m 34s
+- [x] code_critic for 209b829c — 6m 39s
+- [x] test_critic for 209b829c — 53s
+- [x] interaction_e2e for 209b829c — 1m 24s
+- [x] security_critic for 209b829c — 20s
+- [x] data_integrity_critic for 209b829c — 1m 15s
+- [x] code_critic for 209b829c — 58s
+- [x] test_critic for 209b829c — 44s
+- [x] interaction_e2e for 209b829c — 1m 15s
+- [x] security_critic for 209b829c — 36s
+- [x] data_integrity_critic for 209b829c — 56s
+- [x] code_critic for f05ca364 — 2m 26s
+- [x] test_critic for f05ca364 — 1m 27s
+- [x] interaction_e2e for f05ca364 — 1m 36s
+- [x] security_critic for f05ca364 — 55s
+- [x] data_integrity_critic for f05ca364 — 48s
+- [x] code_critic for f05ca364 — 3m 29s
+- [x] test_critic for f05ca364 — 40s
+- [x] interaction_e2e for f05ca364 — 1m 29s
+- [x] security_critic for f05ca364 — 31s
+- [x] data_integrity_critic for f05ca364 — 1m 27s
+- [x] code_critic for f05ca364 — 1m 51s
+- [x] test_critic for f05ca364 — 40s
+- [x] interaction_e2e for f05ca364 — 38s
+- [x] security_critic for f05ca364 — 44s
+- [x] data_integrity_critic for f05ca364 — 20s
+- [x] code_critic for be7e1820 — 5m 53s
+- [x] test_critic for be7e1820 — 34s
+- [x] interaction_e2e for be7e1820 — 1m 49s
+- [x] security_critic for be7e1820 — 1m 29s
+- [x] data_integrity_critic for be7e1820 — 53s
+- [x] code_critic for be7e1820 — 1m 3s
+- [x] test_critic for be7e1820 — 39s
+- [x] interaction_e2e for be7e1820 — 1m 8s
+- [x] security_critic for be7e1820 — 52s
+- [x] data_integrity_critic for be7e1820 — 34s
+- [x] code_critic for be7e1820 — 2m 14s
+- [x] test_critic for be7e1820 — 1m 12s
+- [x] interaction_e2e for be7e1820 — 6m 47s
+- [x] security_critic for be7e1820 — 59s
+- [x] data_integrity_critic for be7e1820 — 1m 2s
+- [x] code_critic for bba1e3ce — 6m 3s
+- [x] test_critic for bba1e3ce — 1m 0s
+- [x] interaction_e2e for bba1e3ce — 1m 21s
+- [x] security_critic for bba1e3ce — 55s
+- [x] data_integrity_critic for bba1e3ce — 2m 21s
+- [x] code_critic for bba1e3ce — 1m 25s
+- [x] test_critic for bba1e3ce — 1m 22s
+- [x] interaction_e2e for bba1e3ce — 4m 28s
+- [x] security_critic for bba1e3ce — 1m 8s
+- [x] data_integrity_critic for bba1e3ce — 2m 18s
+- [x] code_critic for bba1e3ce — 1m 11s
+- [x] test_critic for bba1e3ce — 1m 4s
+- [x] interaction_e2e for bba1e3ce — 1m 40s
+- [x] security_critic for bba1e3ce — 1m 38s
+- [x] data_integrity_critic for bba1e3ce — 1m 36s
+- [x] code_critic scoped: archive.py product-correctness — 24s
+- [x] test_critic scoped: archive regression tests — 30s
+- [x] interaction_e2e scoped: archive CLI behavior — 33s
+- [x] interaction_e2e scoped retry: archive surface, minimal — 15s
+- [x] code_critic for bee5f51f — 1m 31s
+- [x] test_critic for bee5f51f — 1m 11s
+- [x] interaction_e2e for bee5f51f — 2m 19s
+- [x] security_critic for bee5f51f — 33s
+- [x] data_integrity_critic for bee5f51f — 51s
+- [x] code_critic for bee5f51f — 52s
+- [x] test_critic for bee5f51f — 2m 6s
+- [x] interaction_e2e for bee5f51f — 1m 50s
+- [x] security_critic for bee5f51f — 46s
+- [x] data_integrity_critic for bee5f51f — 47s
+- [x] interaction_e2e scoped retry: stats endpoints, minimal — 18s
+- [x] code_critic for 2fa9f9a3 — 1m 44s
+- [x] test_critic for 2fa9f9a3 — 1m 38s
+- [x] interaction_e2e for 2fa9f9a3 — 1m 16s
+- [x] security_critic for 2fa9f9a3 — 1m 40s
+- [x] data_integrity_critic for 2fa9f9a3 — 50s
+- [x] code_critic for 2668f375 — 4m 0s
+- [x] test_critic for 2668f375 — 1m 52s
+- [x] interaction_e2e for 2668f375 — 55s
+- [x] security_critic for 2668f375 — 3m 32s
+- [x] data_integrity_critic for 2668f375 — 5m 24s
+- [x] code_critic for 2668f375 — 3m 13s
+- [x] test_critic for 2668f375 — 32s
+- [x] interaction_e2e for 2668f375 — 1m 8s
+- [x] security_critic for 2668f375 — 2m 20s
+- [x] data_integrity_critic for 2668f375 — 1m 59s
+- [x] code_critic for 2668f375 — 3m 42s
+- [x] test_critic for 2668f375 — 1m 12s
+- [x] interaction_e2e for 2668f375 — 4m 11s
+- [x] security_critic for 2668f375 — 1m 14s
+- [x] data_integrity_critic for 2668f375 — 3m 44s
+- [x] code_critic for 2668f375 — 12m 21s
+- [x] test_critic for 2668f375 — 2m 42s
+- [x] interaction_e2e for 2668f375 — 1m 22s
+- [x] security_critic for 2668f375 — 3m 59s
+- [x] data_integrity_critic for 2668f375 — 3m 1s
+- [x] interaction_e2e scoped retry: api ingest pipeline, minimal — 29s
+- [x] code_critic for 36f0f17f — 3m 36s
+- [x] test_critic for 36f0f17f — 43s
+- [x] interaction_e2e for 36f0f17f — 2m 7s
+- [x] security_critic for 36f0f17f — 1m 2s
+- [x] data_integrity_critic for 36f0f17f — 1m 33s
+- [x] code_critic for b2892710 — 16m 33s
+- [x] test_critic for b2892710 — 7m 17s !! cancelled by user
+- [-] interaction_e2e for b2892710 !! cancelled by user
+- [-] security_critic for b2892710 !! cancelled by user
+- [-] data_integrity_critic for b2892710 !! cancelled by user
+- [x] code_critic for b2892710 — 30m 35s
+- [x] test_critic for b2892710 — 12m 40s
+- [x] interaction_e2e for b2892710 — 19m 54s
+- [x] security_critic for b2892710 — 2m 29s
+- [x] data_integrity_critic for b2892710 — 5m 43s
+- [x] code_critic for b2892710 — 31m 54s
+- [x] test_critic for b2892710 — 25m 44s
+- [x] interaction_e2e for b2892710 — 9m 5s
+- [x] security_critic for b2892710 — 3m 47s
+- [x] data_integrity_critic for b2892710 — 6m 17s
+- [x] code_critic for 21392fba — 9m 3s
+- [x] test_critic for 21392fba — 5m 12s
+- [x] interaction_e2e for 21392fba — 5m 47s
+- [x] security_critic for 21392fba — 1m 1s
+- [x] data_integrity_critic for 21392fba — 1m 47s
+- [x] code_critic for c7e407f9 — 9m 31s
+- [-] test_critic for c7e407f9 — 20s !! cancelled by user
+- [-] interaction_e2e for c7e407f9 !! cancelled by user
+- [-] security_critic for c7e407f9 !! cancelled by user
+- [-] data_integrity_critic for c7e407f9 !! cancelled by user
+- [x] code_critic for b2892710 — 13m 33s
+- [x] test_critic for b2892710 — 9m 30s
+- [x] interaction_e2e for b2892710 — 1m 32s
+- [x] security_critic for b2892710 — 12m 59s
+- [x] data_integrity_critic for b2892710 — 15m 12s
+- [x] interaction_e2e split A: /api/health endpoint, minimal — 1m 0s
+- [x] interaction_e2e split B: health-migrate CLI, minimal — 39s
+- [x] code_critic for c7e407f9 — 7m 29s
+- [x] test_critic for c7e407f9 — 10m 13s
+- [x] interaction_e2e for c7e407f9 — 18m 18s
+- [x] security_critic for c7e407f9 — 6m 53s
+- [x] data_integrity_critic for c7e407f9 — 1m 25s
+- [x] code_critic for fb46aec4 — 34m 23s
+- [x] test_critic for fb46aec4 — 64m 11s
+- [x] interaction_e2e for fb46aec4 — 2m 18s
+- [x] security_critic for fb46aec4 — 36m 54s
+- [x] data_integrity_critic for fb46aec4 — 20m 40s
+- [x] code_critic for fb46aec4 — 22s
+- [x] test_critic for fb46aec4 — 4m 26s
+- [x] interaction_e2e for fb46aec4 — 1m 4s
+- [x] security_critic for fb46aec4 — 2m 35s
+- [x] data_integrity_critic for fb46aec4 — 3m 17s
+- [x] code_critic for 8db287f8 — 21s
+- [x] test_critic for 8db287f8 — 27s
+- [x] interaction_e2e for 8db287f8 — 5m 42s
+- [x] security_critic for 8db287f8 — 25s
+- [x] data_integrity_critic for 8db287f8 — 21m 6s
+- [x] code_critic for 992356c4 — 43m 17s
+- [x] test_critic for 992356c4 — 3m 56s
+- [!] interaction_e2e for 992356c4 — 120m 1s !! opencode invocation timed out after 7200000ms
+- [-] security_critic for 992356c4 !! cancelled by user
+- [-] data_integrity_critic for 992356c4 !! cancelled by user
+- [x] code_critic for 992356c4 — 20m 16s
+- [x] test_critic for 992356c4 — 1m 25s
+- [x] interaction_e2e for 992356c4 — 4m 29s
+- [x] security_critic for 992356c4 — 3m 23s
+- [x] data_integrity_critic for 992356c4 — 3m 24s
+- [x] code_critic for 2598e537 — 29s
+- [x] test_critic for 2598e537 — 36m 1s
+- [x] interaction_e2e for 2598e537 — 1m 0s
+- [x] security_critic for 2598e537 — 2m 23s
+- [x] data_integrity_critic for 2598e537 — 1m 19s
+- [x] code_critic for 17349392 — 16m 57s
+- [x] test_critic for 17349392 — 5m 47s
+- [x] interaction_e2e for 17349392 — 1m 37s
+- [!] security_critic for 17349392 — 120m 0s !! opencode invocation timed out after 7200000ms
+- [-] data_integrity_critic for 17349392 !! cancelled by user
+- [x] code_critic for 17349392 — 16m 57s
+- [x] test_critic for 17349392 — 2m 29s
+- [x] interaction_e2e for 17349392 — 3m 48s
+- [x] security_critic for 17349392 — 57s
+- [x] data_integrity_critic for 17349392 — 2m 21s
+- [x] code_critic for 17349392 — 4m 17s
+- [x] test_critic for 17349392 — 3m 13s
+- [x] interaction_e2e for 17349392 — 18s
+- [x] security_critic for 17349392 — 32s
+- [x] data_integrity_critic for 17349392 — 1m 40s
+- [x] code_critic for 9bb0cc11 — 11m 30s
+- [x] test_critic for 9bb0cc11 — 7m 55s
+- [x] interaction_e2e for 9bb0cc11 — 9m 7s
+- [x] security_critic for 9bb0cc11 — 8m 33s
+- [x] data_integrity_critic for 9bb0cc11 — 2m 16s
+- [x] data-integrity split A: pipeline+rollups for 9bb0cc11 — 21s
+- [x] data-integrity split B: schema+normalize+replay for 9bb0cc11 — 1m 57s
+- [x] security split A: auth+archive+config for 9bb0cc11 — 1m 23s
+- [x] security split B: secrets+PHI+deps for 9bb0cc11 — 2m 9s
+- [x] fix-workout-normalizer — 2m 41s
+- [x] code_critic for 34b9c6a3 — 9m 27s
+- [x] test_critic for 34b9c6a3 — 9m 45s
+- [x] interaction_e2e for 34b9c6a3 — 16m 12s
+- [x] data_integrity_critic for 34b9c6a3 — 5m 58s
+- [x] code_critic for 34b9c6a3 — 1m 31s
+- [x] test_critic for 34b9c6a3 — 46s
+- [x] interaction_e2e for 34b9c6a3 — 7m 55s
+- [x] security_critic for 34b9c6a3 — 6m 5s
+- [x] data_integrity_critic for 34b9c6a3 — 5m 52s
+- [x] code_critic for 34b9c6a3 — 26s
+- [x] test_critic for 34b9c6a3 — 7s
+- [x] interaction_e2e for 34b9c6a3 — 8m 16s
+- [x] security_critic for 34b9c6a3 — 3m 1s
+- [x] data_integrity_critic for 34b9c6a3 — 11m 37s
+- [x] code split A: normalize.py scope-fit for fix-workout-normalizer — 2m 50s
+- [x] code split B: pipeline/replay/helpers scope-fit for fix-workout-normalizer — 6m 0s
+- [x] test split A: unit coverage for real workout shapes — 22s
+- [x] test split B: acceptance repair-path guards — 5m 25s
+- [x] security critic retry: fix-workout-normalizer — 1m 17s
+- [x] interaction_e2e split: live repair + MCP/CLI surface — 2m 3s
+- [x] data-integrity split A: workout field correctness + units — 1m 31s
+- [x] data-integrity split B: repair + rollup idempotency — 12m 36s
+- [x] test split A rerun: unit shape coverage — 15s
+- [x] code_critic for 34b9c6a3 — 3m 8s
+- [x] test_critic for 34b9c6a3 — 6m 34s
+- [x] interaction_e2e for 34b9c6a3 — 5m 46s
+- [x] security_critic for 34b9c6a3 — 3m 25s
+- [x] data_integrity_critic for 34b9c6a3 — 6m 18s
+- [x] code_critic for 34b9c6a3 — 4m 34s
+- [x] test_critic for 34b9c6a3 — 1m 53s
+- [x] interaction_e2e for 34b9c6a3 — 6m 20s
+- [x] security_critic for 34b9c6a3 — 1m 48s
+- [x] data_integrity_critic for 34b9c6a3 — 5m 46s
+- [x] test-critic unit coverage micro-check — 53s
+- [x] test-critic determinism guard teeth micro-check — 18s
+- [x] eval-mu51yalx — 21s
+- [x] eval-mu520mxv — 24s
+- [x] eval-mu52dsgh — 3m 37s
+- [x] eval-mu52k8ag — 1m 41s
+- [x] eval-mu52n3lr — 2m 24s

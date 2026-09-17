@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>health-db — Slice 1 Wireframe: Ingest Validation (no DB)</title>
+<style>
+  body { font-family: "SF Mono", Menlo, monospace; background: #0f172a; color: #e2e8f0; margin: 2rem; font-size: 13px; }
+  h1 { font-family: -apple-system, sans-serif; font-size: 1.2rem; }
+  h2 { font-family: -apple-system, sans-serif; font-size: 0.9rem; color: #94a3b8; font-weight: 400; }
+  .cols { display: flex; gap: 1.5rem; }
+  .panel { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 1rem; flex: 1; }
+  .panel h3 { margin: 0 0 0.5rem; font-size: 0.8rem; color: #22c55e; font-weight: 600; }
+  pre { background: #0b1120; border-radius: 6px; padding: 0.7rem; overflow-x: auto; font-size: 11.5px; line-height: 1.55; margin: 0 0 1rem; }
+  .ok { color: #22c55e; } .err { color: #ef4444; } .dim { color: #64748b; } .amber { color: #f59e0b; }
+  .note { color: #94a3b8; font-family: -apple-system, sans-serif; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Slice 1 — Ingest Validation with Real Data (use-checkpoint state)</h1>
+<h2>Service accepts + archives HAE payloads but does NOT write PostgreSQL. The archive becomes slice-2's fixture corpus.</h2>
+
+<div class="cols">
+  <div class="panel">
+    <h3>Phone setup — 3 HAE REST automations &rarr; dev machine (LAN)</h3>
+<pre><span class="dim">Health Auto Export &rarr; Automations &rarr; New &rarr; REST API</span>
+
+Automation: metrics-all
+  URL:        http://&lt;dev-machine-LAN-IP&gt;:8000/api/ingest
+  Header:     X-Ingest-Token: &lt;token from .env&gt;
+  Format:     JSON &middot; v2 &middot; Summarize ON &middot; hours
+  Range:      Standard &middot; Batch ON &middot; hourly
+
+Automation: metrics-hr-steps
+  (same, but only Heart Rate + Step Count, minutes)
+
+Automation: workouts
+  (Include Workout Metrics ON, Route Data ON, daily)
+
+<span class="ok">&hellip; Manual Export &rarr; 2024-01-01 &hellip; 2024-12-31 &rarr; Export</span>
+<span class="dim">→ posts in batches, phone on charger, home Wi-Fi</span></pre>
+    <h3>Verification curl</h3>
+<pre><span class="dim">$ curl -s server:8000/api/ingest/stats -H "X-Ingest-Token: &hellip;"</span>
+{"received": <span class="ok">37</span>, "stored": 37, "duplicate": 0,
+ "quarantined": 0, "last_automation": "metrics-all"}
+
+<span class="dim">$ curl server:8000/api/ingest -H "X-Ingest-Token: wrong"</span>
+<span class="err">401 Unauthorized</span>  <span class="dim">← audit-logged, body NOT archived</span>
+
+<span class="dim">$ curl server:8000/api/ingest -H "X-Ingest-Token: &hellip;" \
+     -d '{broken'</span>
+<span class="err">400</span> {"error": "malformed", "quarantine": "q-20260908T1015-af3.hae.json"}
+  <span class="amber">← archived to quarantine/ for inspection</span></pre>
+  </div>
+
+  <div class="panel">
+    <h3>Payload report — what each POST returns</h3>
+<pre>200 OK
+{
+  "outcome": "stored",
+  "data_type": "metrics",
+  "metrics": <span class="ok">42</span>,
+  "samples": <span class="ok">1034</span>,
+  "workouts": 0,
+  "unknown_formats": [],
+  "archive_path": "data/archive/2026/09/08/
+     101530-a1f9c2&hellip;.json",      <span class="dim">← verbatim on disk</span>
+  "sha256": "a1f9c2&hellip;",
+  "took_ms": 318
+}
+
+<span class="dim"># re-posting the same payload:</span>
+200 OK {"outcome": "duplicate", "sha256": "a1f9c2&hellip;"}
+  <span class="dim">← sha256 skip, no reprocessing</span></pre>
+    <h3>Disk archive tree (the slice-2 gold)</h3>
+<pre>data/archive/
+  2026/09/08/
+    101530-a1f9c2&hellip;.json   <span class="dim">37 files, 100% verbatim</span>
+    &hellip;
+  quarantine/
+    q-20260908T1015-af3.json  <span class="amber">2 malformed (kept for inspection)</span></pre>
+    <p class="note">Acceptance: every phone POST &rarr; 200 &lt;2s &middot; 100% archived &middot; 401/400/413 paths proven by curl &middot; HAE activity logs show green. Slice-2 fixtures = these real payloads (never synthetic for integration tests).</p>
+  </div>
+</div>
+</body>
+</html>

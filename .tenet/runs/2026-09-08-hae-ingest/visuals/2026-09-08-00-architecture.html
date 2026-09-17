@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>health-db — Final Product Architecture</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #0f172a; color: #f8fafc; margin: 2rem; }
+  h1 { font-size: 1.3rem; font-weight: 600; }
+  h2 { font-size: 0.95rem; color: #94a3b8; font-weight: 400; }
+  .box { fill: #1e293b; stroke-width: 2; }
+  .box:hover { filter: brightness(1.3); cursor: pointer; }
+  text { font-family: -apple-system, sans-serif; }
+  .lbl { fill: #f8fafc; font-size: 13px; font-weight: 600; }
+  .sub { fill: #94a3b8; font-size: 10px; }
+  .edge-lbl { fill: #38bdf8; font-size: 10px; }
+  .legend { color: #94a3b8; font-size: 12px; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>health-db — Final Product Architecture (all slices)</h1>
+<h2>HAE iPhone &rarr; server ingest service &rarr; PostgreSQL 18 &rarr; MCP query surface</h2>
+<svg width="980" height="560" viewBox="0 0 980 560">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+    <marker id="arrb" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#38bdf8"/>
+    </marker>
+  </defs>
+
+  <!-- iPhone / HAE -->
+  <rect class="box" x="30" y="60" width="170" height="150" rx="12" stroke="#3b82f6"/>
+  <text class="lbl" x="115" y="88" text-anchor="middle">iPhone — HAE app</text>
+  <text class="sub" x="115" y="108" text-anchor="middle">Automation 1: metrics-all (hours)</text>
+  <text class="sub" x="115" y="124" text-anchor="middle">Automation 2: HR+Steps (minutes)</text>
+  <text class="sub" x="115" y="140" text-anchor="middle">Automation 3: workouts + routes</text>
+  <text class="sub" x="115" y="156" text-anchor="middle">JSON v2 &middot; Batch ON</text>
+  <text class="sub" x="115" y="172" text-anchor="middle">Manual Export = backfill chunks</text>
+
+  <!-- self-hosted server boundary -->
+  <rect x="270" y="30" width="680" height="500" rx="14" fill="none" stroke="#475569" stroke-dasharray="6 4"/>
+  <text class="sub" x="610" y="52" text-anchor="middle">self-hosted server — Docker network (LAN / VPN only for 5432)</text>
+
+  <!-- Reverse proxy (future) -->
+  <rect class="box" x="300" y="80" width="150" height="60" rx="10" stroke="#a855f7"/>
+  <text class="lbl" x="375" y="106" text-anchor="middle">TLS reverse proxy</text>
+  <text class="sub" x="375" y="124" text-anchor="middle">(later: 443 port-fwd)</text>
+
+  <!-- FastAPI service -->
+  <rect class="box" x="490" y="60" width="200" height="260" rx="12" stroke="#22c55e"/>
+  <text class="lbl" x="590" y="88" text-anchor="middle">health-db service</text>
+  <text class="sub" x="590" y="106" text-anchor="middle">FastAPI + uvicorn (Docker)</text>
+  <text class="sub" x="590" y="128" text-anchor="middle">1. token auth (constant-time)</text>
+  <text class="sub" x="590" y="144" text-anchor="middle">2. verbatim disk archive FIRST</text>
+  <text class="sub" x="590" y="160" text-anchor="middle">3. sha256 duplicate skip</text>
+  <text class="sub" x="590" y="176" text-anchor="middle">4. normalize (units, KST day,</text>
+  <text class="sub" x="590" y="192" text-anchor="middle">&#8594; systolic/diastolic, asleep pref)</text>
+  <text class="sub" x="590" y="208" text-anchor="middle">5. latest-wins upsert</text>
+  <text class="sub" x="590" y="224" text-anchor="middle">6. rollup recompute (same txn)</text>
+  <text class="sub" x="590" y="240" text-anchor="middle">7. replay tool (DB outage)</text>
+  <text class="sub" x="590" y="262" text-anchor="middle">MCP server (separate port or</text>
+  <text class="sub" x="590" y="278" text-anchor="middle">ASGI mount) — 8 tools, 3 resources</text>
+  <text class="sub" x="590" y="294" text-anchor="middle">CLI wrapper (dev)</text>
+
+  <!-- Disk archive -->
+  <rect class="box" x="310" y="360" width="180" height="80" rx="10" stroke="#f59e0b"/>
+  <text class="lbl" x="400" y="388" text-anchor="middle">data/archive/</text>
+  <text class="sub" x="400" y="406" text-anchor="middle">verbatim payload + quarantine/</text>
+  <text class="sub" x="400" y="422" text-anchor="middle">slice-1 capture corpus</text>
+
+  <!-- Postgres -->
+  <rect class="box" x="720" y="80" width="200" height="260" rx="12" stroke="#3b82f6"/>
+  <text class="lbl" x="820" y="108" text-anchor="middle">PostgreSQL 18.6</text>
+  <text class="sub" x="820" y="126" text-anchor="middle"><server-host>:5432 &middot; db health_app</text>
+  <text class="sub" x="820" y="148" text-anchor="middle">raw_samples (monthly RANGE</text>
+  <text class="sub" x="820" y="164" text-anchor="middle">partitions, PK metric/src/ts)</text>
+  <text class="sub" x="820" y="180" text-anchor="middle">day_kst GENERATED (+09:00)</text>
+  <text class="sub" x="820" y="196" text-anchor="middle">metric_dim / source_dim</text>
+  <text class="sub" x="820" y="212" text-anchor="middle">daily_rollups (sum/avg/min/max/cnt)</text>
+  <text class="sub" x="820" y="228" text-anchor="middle">workouts / heart_rate / routes</text>
+  <text class="sub" x="820" y="244" text-anchor="middle">raw_ingest (jsonb + sha256)</text>
+  <text class="sub" x="820" y="260" text-anchor="middle">auth_log &middot; schema_migrations</text>
+
+  <!-- MCP clients -->
+  <rect class="box" x="490" y="440" width="200" height="80" rx="10" stroke="#38bdf8"/>
+  <text class="lbl" x="590" y="468" text-anchor="middle">MCP HTTP clients</text>
+  <text class="sub" x="590" y="486" text-anchor="middle">Claude / agents &middot; Bearer token</text>
+  <text class="sub" x="590" y="502" text-anchor="middle">streamable-http /mcp</text>
+
+  <!-- CLI -->
+  <rect class="box" x="300" y="460" width="130" height="60" rx="10" stroke="#64748b"/>
+  <text class="lbl" x="365" y="486" text-anchor="middle">CLI wrapper</text>
+  <text class="sub" x="365" y="504" text-anchor="middle">uv run health ...</text>
+
+  <!-- Edges -->
+  <path d="M 200 110 L 300 108" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+  <text class="edge-lbl" x="243" y="98" text-anchor="middle">POST /api/ingest</text>
+  <path d="M 450 108 L 490 120" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M 590 320 L 590 360 L 490 400" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <text class="edge-lbl" x="530" y="352" text-anchor="middle">archive FIRST (before parse)</text>
+  <path d="M 690 160 L 720 160" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrb)"/>
+  <text class="edge-lbl" x="705" y="148" text-anchor="middle">upsert + rollups</text>
+  <path d="M 690 240 L 720 250" stroke="#38bdf8" stroke-width="2" fill="none" marker-end="url(#arrb)"/>
+  <text class="edge-lbl" x="705" y="228" text-anchor="middle">503 on outage &rarr; replay</text>
+  <path d="M 590 440 L 590 330" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrb)"/>
+  <text class="edge-lbl" x="640" y="392" text-anchor="middle">tools/resources &rarr; SQL</text>
+  <path d="M 430 490 L 490 480" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M 720 340 L 800 340 L 800 440 L 690 480" stroke="#38bdf8" stroke-width="2" fill="none" marker-end="url(#arrb)"/>
+  <text class="edge-lbl" x="790" y="420" text-anchor="middle">same query layer</text>
+</svg>
+<p class="legend">Hover boxes to highlight. &nbsp;Green = service container (slice 1: archive+report only; slice 2: +PG writes + MCP). Blue = query paths. Amber = archive-first disk (iron law: payload on disk before any outcome).</p>
+</body>
+</html>

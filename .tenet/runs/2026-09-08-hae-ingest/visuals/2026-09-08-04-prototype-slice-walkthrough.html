@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>health-db — Slice Walkthrough (click through the checkpoints)</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; margin: 2rem; }
+  .screen { display: none; background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; max-width: 860px; }
+  .screen.active { display: block; }
+  h1 { font-size: 1.15rem; margin-top: 0; }
+  .step { font-size: 0.75rem; color: #38bdf8; letter-spacing: 0.08em; text-transform: uppercase; }
+  pre { font-family: "SF Mono", Menlo, monospace; font-size: 12px; background: #0b1120; border-radius: 8px; padding: 0.9rem; overflow-x: auto; line-height: 1.55; }
+  .ok { color: #22c55e; } .amber { color: #f59e0b; } .err { color: #ef4444; } .dim { color: #64748b; }
+  button { background: #2563eb; border: none; color: white; padding: 0.55rem 1.1rem; border-radius: 8px; font-size: 0.9rem; cursor: pointer; margin-top: 1rem; }
+  button:hover { background: #3b82f6; }
+  .back { background: #334155; margin-right: 0.5rem; }
+  ul { color: #94a3b8; font-size: 0.9rem; line-height: 1.6; }
+  .chk { color: #4ade80; }
+</style>
+</head>
+<body>
+
+<div id="s0" class="screen active">
+  <div class="step">Destination</div>
+  <h1>The full pipeline — where this run ends up</h1>
+  <ul>
+    <li><b>iPhone</b> — Health Auto Export posts JSON v2 via 3 automations (metrics-hours / HR+Steps-minutes / workouts)</li>
+    <li><b>server service</b> — FastAPI: token auth &rarr; verbatim disk archive &rarr; sha256 dedup &rarr; normalize &rarr; latest-wins upsert &rarr; KST-day rollups</li>
+    <li><b>PostgreSQL 18.6</b> — <server-host>:5432, monthly-partitioned raw_samples, dimension tables, jsonb payload archive</li>
+    <li><b>MCP surface</b> — streamable-HTTP, 8 tools + 3 resources, Bearer auth; CLI wrapper for dev</li>
+    <li>History arrives via HAE itself (no SQLite migration); hourly deltas &lt;5 min; backfill &le;1 day</li>
+  </ul>
+  <button onclick="show(1)">Slice 1 &rarr;</button>
+</div>
+
+<div id="s1" class="screen">
+  <div class="step">Use-checkpoint 1</div>
+  <h1>Slice 1 — Ingest validation, real payloads, no DB</h1>
+  <ul>
+    <li>You configure 3 automations on the phone (LAN, dev machine or server) and trigger Manual Exports</li>
+    <li>Every POST: 200 &lt;2s, verbatim archive under <pre style="display:inline">data/archive/</pre></li>
+    <li>Proven by curl: 401 (bad token, audit-logged), 400+quarantine (malformed), duplicate skip, 413 (oversize)</li>
+    <li>Captured real payloads become slice-2 integration fixtures</li>
+  </ul>
+<pre>$ curl -s :8000/api/ingest/stats -H "X-Ingest-Token: &hellip;"
+{"received": 37, "stored": 37, "duplicate": 0, "quarantined": 0}
+<span class="dim">← you watch payloads arrive; HAE activity logs stay green</span></pre>
+  <button class="back" onclick="show(0)">&larr; Back</button>
+  <button onclick="show(2)">Slice 2 &rarr;</button>
+</div>
+
+<div id="s2" class="screen">
+  <div class="step">Use-checkpoint 2</div>
+  <h1>Slice 2 — Database + MCP + backfill + deploy</h1>
+  <ul>
+    <li>Schema migrations applied; replay of slice-1 archive fills the DB</li>
+    <li>Phone backfill: yearly Manual Export chunks, idempotent (re-run &rarr; zero double-counts)</li>
+    <li>MCP server live: Claude connects with Bearer token, tools return paginated JSON, rollup query &lt;1s @ 90d</li>
+    <li>Docker image on self-hosted; DB-outage drill: 503 &rarr; archive &rarr; replay, nothing lost</li>
+    <li>Post-deploy validation &rarr; then (later, separate) retire predecessor</li>
+  </ul>
+<pre>&gt; get_metric_series("heart_rate", "2026-06-10", "2026-09-08")
+{"points": 90, "took_ms": <span class="ok">38</span>, "days": [&hellip;]}
+<span class="dim">← what an MCP agent sees; CLI wrapper prints the same data</span></pre>
+  <button class="back" onclick="show(1)">&larr; Back</button>
+  <button onclick="show(3)">Done &rarr;</button>
+</div>
+
+<div id="s3" class="screen">
+  <div class="step">After this run</div>
+  <h1>Post-run (documented runbooks, later work)</h1>
+  <ul>
+    <li>TLS + port-forwarding on reverse proxy (443 only, never 5432)</li>
+    <li>pg_dump backup cron</li>
+    <li>Analysis features (stress, training load) — deferred, out of scope</li>
+    <li>predecessor decommission after post-deploy validation parity checks</li>
+  </ul>
+  <p><span class="chk">&#10003;</span> Each use-checkpoint needs your explicit approve/redirect before the next slice starts.</p>
+  <button class="back" onclick="show(2)">&larr; Back</button>
+</div>
+
+<script>
+function show(n) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('s'+n).classList.add('active');
+}
+</script>
+</body>
+</html>
