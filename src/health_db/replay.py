@@ -47,7 +47,12 @@ Counting contract (:class:`ReplayReport`):
 - ``skip_accounting`` folds every processed payload's data-point drop
   census (run 2026-09-17-normalizer-audit §5 keys) into one run-wide
   object — printed to stderr as diagnostics, mirrored in the JSON
-  summary.
+  summary. The census merges BOTH sources the live ``/api/ingest``
+  response merges (main.py): the parse-level report
+  (:func:`health_db.payloads.parse` — the ``unrecognized_shape`` counter;
+  replay hands the pipeline the decoded document, so the store stage never
+  parses and folds it here via :func:`_fold_parse_skips`) and the store
+  stage's ``IngestResult.skipped`` (:func:`_fold_result_skips`).
 
 CLI surface (``uv run health-replay``): progress lines + a JSON summary to
 stdout; exit 0 even when some payloads failed (they are recoverable by
@@ -69,7 +74,7 @@ from typing import TYPE_CHECKING
 
 import health_db.config as config
 from health_db.db.helpers import SELECT_RAW_INGEST_SHA
-from health_db.payloads import empty_skipped, merge_skipped
+from health_db.payloads import MalformedPayload, empty_skipped, merge_skipped, parse
 from health_db.pending import PendingStore
 from health_db.pipeline import ingest_payload
 
@@ -155,6 +160,26 @@ def _fold_result_skips(report: ReplayReport, result: object) -> None:
         merge_skipped(report.skip_accounting, skips)
 
 
+def _fold_parse_skips(report: ReplayReport, body: bytes) -> None:
+    """Fold the parse-level §5 census (unrecognized_shape) for one payload.
+
+    The live ingest route parses every body (main.py: ``parse(body)``) and
+    merges the parse report's counters into the response; replay hands the
+    pipeline the decoded document, so :func:`pipeline.ingest_payload` never
+    parses and its ``IngestResult.skipped`` can never carry
+    ``unrecognized_shape``. Folding :func:`payloads.parse` here restores
+    parity: the replay CLI's ``skipped-points`` diagnostics report the same
+    object the live response surfaces. MalformedPayload cannot occur — the
+    caller already ``json.loads``-gated the same bytes — but is caught and
+    treated as no-census rather than poisoning a committed store.
+    """
+    try:
+        report_skips = parse(body).skipped
+    except MalformedPayload:
+        return
+    merge_skipped(report.skip_accounting, report_skips)
+
+
 def replay_dir(
     root: str | Path,
     pool: object | None = None,
@@ -223,6 +248,7 @@ def replay_dir(
         # First-applied (pipeline already dedups an existing sha to
         # duplicate without reprocessing — zero row changes on re-run).
         report.processed += 1
+        _fold_parse_skips(report, body)
         _fold_result_skips(report, result)
     return report
 
@@ -287,6 +313,7 @@ def replay_pending(
         store.drain(path)
         report.pending_drained += 1
         report.processed += 1
+        _fold_parse_skips(report, body)
         _fold_result_skips(report, result)
     return report
 

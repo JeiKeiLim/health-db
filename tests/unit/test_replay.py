@@ -351,6 +351,62 @@ class TestSkipAccounting:
         assert report.failed == 1 and report.processed == 0
         assert report.skip_accounting["ecg"] == 0, "failed stores must not fold counts"
 
+    def test_unrecognized_point_shape_folds_into_accounting(self, tmp_path, fake_pool):
+        """Parity with the live /api/ingest response (main.py merges the parse
+        report's counters): replay hands the pipeline the decoded document, so
+        the store stage never parses — the parse-level census
+        (unrecognized_shape) must be folded here in replay, not left at 0."""
+        self._dir_with(
+            tmp_path,
+            [
+                {
+                    "data": {
+                        "metrics": [
+                            {
+                                "name": "blood_pressure",
+                                "units": "mmHg",
+                                "data": [{"systolic": 120}],
+                            }
+                        ],
+                        "workouts": [],
+                    }
+                }
+            ],
+        )
+        ingest = FakeIngest()  # plain "stored" results, no skipped attr
+
+        report = replay.replay_dir(tmp_path, "fake-pool", ingest=ingest)
+
+        assert report.processed == 1
+        assert report.skip_accounting["unrecognized_shape"] == 1, (
+            "a {systolic}-only point is unrecognized at parse time and must be "
+            "counted in the run-wide accounting, not dropped silently"
+        )
+
+    def test_pending_replay_folds_parse_level_unrecognized_shape(self, tmp_path, fake_pool):
+        store = PendingStore(root=tmp_path / "pending")
+        body = json.dumps(
+            {
+                "data": {
+                    "metrics": [
+                        {
+                            "name": "blood_pressure",
+                            "units": "mmHg",
+                            "data": [{"systolic": 120}],
+                        }
+                    ],
+                    "workouts": [],
+                }
+            }
+        ).encode("utf-8")
+        store.store(body, sha256=store.sha256_of(body))
+        ingest = FakeIngest()
+
+        report = replay.replay_pending("fake-pool", ingest=ingest, pending=store)
+
+        assert report.pending_drained == 1
+        assert report.skip_accounting["unrecognized_shape"] == 1
+
     def test_plain_string_results_are_tolerated(self, tmp_path, fake_pool):
         # Legacy/injected seams returning a bare outcome string (no
         # .skipped attribute) must not crash the fold.
