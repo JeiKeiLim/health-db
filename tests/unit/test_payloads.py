@@ -136,6 +136,41 @@ class TestWrongShapeRejected:
         with pytest.raises(MalformedPayload, match="no metrics and no workouts"):
             parse(wrap([], []))
 
+    def test_lane_only_payload_accepted(self):
+        # Run 2026-09-17-normalizer-audit §2/§3: an envelope that would be
+        # "empty" is still valid when it carries ECG/notification lane data
+        # (the lanes store real rows; rejecting them would silently drop a
+        # documented surface — anti-scenario 1).
+        report = parse(json.dumps({"data": {"metrics": [], "workouts": [], "ecg": [
+            {"source": "심전도", "start": "2025-10-12 10:45:06 +0900",
+             "end": "2025-10-12 10:45:36 +0900", "voltageMeasurements": [
+                 {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}]}
+        ]}}).encode())
+        # _classify_data_type sees empty metrics AND empty workouts: the
+        # contract enum falls back to 'workouts' (lane presence never adds a
+        # third enum value — raw_ingest.data_type stays in {'metrics','workouts'}).
+        assert report.data_type == "workouts"
+        assert report.skipped["ecg"] == 0
+
+    def test_lane_only_hrn_payload_accepted(self):
+        hrn = [{"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:49:20Z",
+                "heartNotification": "high_heart_rate_notification",
+                "source": {"name": "Watch"}}]
+        report = parse(json.dumps(
+            {"data": {"metrics": [], "workouts": [], "heartRateNotifications": hrn}}
+        ).encode())
+        assert report.skipped["notification"] == 0
+
+    def test_empty_lane_list_still_rejected(self):
+        # An empty ecg list is not lane data: the envelope stays empty.
+        with pytest.raises(MalformedPayload, match="no metrics and no workouts"):
+            parse(json.dumps({"data": {"metrics": [], "workouts": [], "ecg": []}}).encode())
+
+    def test_lane_key_with_non_list_value_still_rejected(self):
+        # A scalar/malformed lane value carries no rows — not lane data.
+        with pytest.raises(MalformedPayload, match="no metrics and no workouts"):
+            parse(json.dumps({"data": {"metrics": [], "workouts": [], "ecg": "nope"}}).encode())
+
 
 # ---------------------------------------------------------------------------
 # Documented shape: common {qty, date, source?}

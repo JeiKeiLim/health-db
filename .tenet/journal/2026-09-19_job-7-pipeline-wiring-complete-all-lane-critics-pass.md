@@ -1,0 +1,13 @@
+# job-7 pipeline wiring complete, all lane critics pass
+
+type: journal
+source_job: 00000000-0000-0000-0000-000000000000
+job_name: unknown
+created: 2026-09-19T10:26:54.611Z
+
+## Findings
+
+- **deliverables**: {"db_helpers":"UPSERT_ECG/UPSERT_ECG_VOLTAGE/UPSERT_HRN/UPSERT_HRN_SAMPLE parameterized SQL (latest-wins ON CONFLICT per spec §6 keys; parents RETURNING id; voltages batched ≤10k via normalize.ECG_VOLTAGE_BATCH); _Ids gained ecg_ids/hrn_ids ref→id caches","payloads":"envelope accepted for lane-only payloads (_has_lane_data gate: non-empty data.ecg/heartRateNotifications list) — was rejecting ECG_SESSION/HR_NOTIFICATION docs as 'empty v2 envelope' 400, making lane data un-ingestible AND un-replayable (anti-scenario 1)","pipeline":"_upsert_ecg_lane/_upsert_hrn_lane wired into ingest_payload SAME transaction (after _upsert_samples, before raw_ingest); lane skip censuses fold into spec §5 dict; rollups untouched; raw_ingest.data_type unchanged enum"}
+- **remaining_for_job_8**: 3 failing acceptance tests are the job-8 MCP/queries surface (queries.list_ecgs/get_ecg_detail/list_heart_notifications don't exist yet; schema_resource needs pool kwarg per acceptance) — TestMcpTools::{test_list_ecgs_and_detail,test_list_heart_notifications,test_schema_resource_lists_new_tables}
+- **scope_note**: Job-7's mandate said lane tests + idempotency must pass; they do. The 3 MCP-tool failures were pre-existing (queries.py never had list_ecgs — job-8 deliverable) but only VISIBLE after the collection fix; leaving a pointer here so e2e-1 doesn't misattribute them to job-7.
+- **tests**: {"acceptance":"TestEcgLane 3/3, TestNotificationLane 2/2, TestSleepValueRule 4/4, TestSleepInBed 2/2, TestUnitConversion 3/3, TestRepairAndRecognition 2/2, TestAntiScenarios 2/2, TestCensusLock 1/1, parse_everything_migration 21/21 — all green against disposable postgres:18; full acceptance 142/145, unit 583/583, ruff clean","collection_fix":"pyproject.toml python_files gained 'parse_everything*.py' — BOTH parse-everything acceptance files (23+21 tests) were silently never collected under the old test_*.py/slice_*.py patterns (their -v runs 'passed' only because they were run BY PATH); pytest full-tree runs skipped them entirely. Also removed stale __pycache__/.pytest_cache that masked the gap.","unit":"tests/unit/test_lane_persistence.py: 22 tests through REAL ingest_payload vs in-memory fake txn (lane rows stored, ref→id resolution, idempotent re-post incl. force-repair path, lane crash rolls back whole payload incl. samples, lane drops counted, out-of-rollups, single pool borrow for both lanes, data_type enum); test_payloads +4 envelope-acceptance tests; test_queries census updated for 4 new schema tables"}

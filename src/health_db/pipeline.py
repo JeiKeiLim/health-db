@@ -22,7 +22,12 @@ payload (all-or-nothing per the interface contract):
    recompute from the full sample set of the day).
 5. Workouts upsert by UUID (latest-wins on re-send) + ``workout_heart_rate``
    + ``routes`` (kJ→kcal conversions already applied by the normalizer).
-6. ``raw_ingest`` row (sha256 UNIQUE, headers, verbatim payload jsonb,
+6. ECG + heart-rate-notification lanes (run 2026-09-17-normalizer-audit §2/§3):
+   sessions upsert latest-wins on UNIQUE (source_name, start_ts) RETURNING
+   the DB id, then voltages/samples insert by (parent_id, seq/ts/kind) PK —
+   same transaction, same latest-wins idempotency, OUT of daily_rollups
+   (session lanes, like workouts).
+7. ``raw_ingest`` row (sha256 UNIQUE, headers, verbatim payload jsonb,
    ``outcome='stored'``) — the DB-side dedup signal for replay.
 
 Failure semantics:
@@ -52,7 +57,11 @@ from typing import TYPE_CHECKING
 
 from health_db.db.helpers import _Ids, _parse_headers, recompute_rollups
 from health_db.db.partitions import ensure_backfill_range, ensure_partitions
-from health_db.normalize import SampleRow, workout_rows
+from health_db.normalize import (
+    ECG_VOLTAGE_BATCH,
+    SampleRow,
+    workout_rows,
+)
 from health_db.payloads import empty_skipped, merge_skipped
 
 if TYPE_CHECKING:
@@ -211,6 +220,112 @@ def _upsert_workouts(
     return len(grouped)
 
 
+def _upsert_ecg_lane(
+    conn: ConnectionType,
+    ids: _Ids,
+    parsed: object,
+) -> tuple[int, dict[str, int]]:
+    """ECG lane upserts (spec §2): sessions latest-wins RETURNING id, then
+    voltage rows by (ecg_id, seq) in ≤10k executemany batches (spec §8).
+
+    The normalizer's array-position ``ref`` resolves to the DB id via the
+    per-transaction ``ids.ecg_ids`` cache — a re-posted payload conflicts on
+    (source_name, start_ts), gets the SAME parent id back, and its voltages
+    DO UPDATE in place: re-posting stores zero new rows. OUT of rollups.
+    Returns ``(sessions_offered, skip_census)`` — the census carries the
+    normalizer's ``skipped.ecg`` drops (unparseable/empty sessions, malformed
+    voltage points) for the spec §5 accounting.
+    """
+    from health_db.db.helpers import UPSERT_ECG, UPSERT_ECG_VOLTAGE
+    from health_db.normalize import _ecg_rows
+
+    sessions, voltages, skips = _ecg_rows(parsed)
+    if not sessions:
+        return 0, skips
+    for row in sessions:
+        db_id = conn.execute(
+            UPSERT_ECG,
+            (
+                row.source_name,
+                row.start_ts,
+                row.end_ts,
+                row.classification,
+                row.sampling_frequency,
+                row.average_heart_rate,
+                row.voltage_count,
+            ),
+        ).fetchone()
+        ids.ecg_ids[row.ref] = int(db_id[0])
+    if voltages:
+        with conn.cursor() as cur:
+            for offset in range(0, len(voltages), ECG_VOLTAGE_BATCH):
+                cur.executemany(
+                    UPSERT_ECG_VOLTAGE,
+                    (
+                        (
+                            ids.ecg_ids[v.ecg_ref],
+                            v.seq,
+                            v.ts,
+                            v.voltage,
+                            v.units,
+                        )
+                        for v in voltages[offset : offset + ECG_VOLTAGE_BATCH]
+                    ),
+                )
+    return len(sessions), skips
+
+
+def _upsert_hrn_lane(
+    conn: ConnectionType,
+    ids: _Ids,
+    parsed: object,
+) -> tuple[int, dict[str, int]]:
+    """Heart-rate-notification lane upserts (spec §3): events latest-wins
+    RETURNING id, then hr/hrv sample rows by (notification_id, ts, kind).
+
+    Same ref→id resolution as the ECG lane (``ids.hrn_ids``): a re-posted
+    event conflicts on (source_name, start_ts), keeps its id, and its
+    samples DO UPDATE in place — idempotent re-delivery, OUT of rollups.
+    Returns ``(events_offered, skip_census)`` — the census carries the
+    normalizer's ``skipped.notification`` drops (unparseable events,
+    malformed samples) for the spec §5 accounting.
+    """
+    from health_db.db.helpers import UPSERT_HRN, UPSERT_HRN_SAMPLE
+    from health_db.normalize import _hrn_rows
+
+    events, samples, skips = _hrn_rows(parsed)
+    if not events:
+        return 0, skips
+    for row in events:
+        db_id = conn.execute(
+            UPSERT_HRN,
+            (
+                row.source_name,
+                row.start_ts,
+                row.end_ts,
+                row.kind,
+                row.threshold,
+            ),
+        ).fetchone()
+        ids.hrn_ids[row.ref] = int(db_id[0])
+    if samples:
+        with conn.cursor() as cur:
+            cur.executemany(
+                UPSERT_HRN_SAMPLE,
+                (
+                    (
+                        ids.hrn_ids[s.hrn_ref],
+                        s.ts,
+                        s.kind,
+                        s.value,
+                        s.units,
+                    )
+                    for s in samples
+                ),
+            )
+    return len(events), skips
+
+
 def ingest_payload(
     pool: ConnectionPool,
     parsed: object,
@@ -287,6 +402,14 @@ def ingest_payload(
                 ensure_backfill_range(conn, first_day=min(days), last_day=max(days))
             ensure_partitions(conn)
             stored = _upsert_samples(conn, ids, rows)
+
+            # Lane persistence (spec §2/§3): same transaction, after samples,
+            # before raw_ingest. The lane normalizers' drop censuses fold
+            # into the same spec §5 dict (keys 'ecg'/'notification').
+            _ecg_count, ecg_skips = _upsert_ecg_lane(conn, ids, parsed)
+            _hrn_count, hrn_skips = _upsert_hrn_lane(conn, ids, parsed)
+            merge_skipped(skipped, ecg_skips)
+            merge_skipped(skipped, hrn_skips)
 
             _deleted, _inserted = recompute_rollups(conn, days)
 

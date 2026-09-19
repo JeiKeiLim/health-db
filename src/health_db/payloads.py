@@ -232,6 +232,20 @@ def _classify_data_type(n_metric_groups: int, n_workouts: int) -> DataType:
     return "workouts"
 
 
+# Lane keys (run 2026-09-17-normalizer-audit §2/§3): an envelope that would
+# otherwise be "empty" (no metrics AND no workouts) is still accepted when it
+# carries ECG/notification lane data — a lane-only payload stores real rows
+# (ecgs/heart_rate_notifications), so rejecting it would silently drop a
+# documented data surface (anti-scenario 1). No real corpus file is
+# lane-only, but the door stays open for one.
+_LANE_KEYS = ("ecg", "heartRateNotifications")
+
+
+def _has_lane_data(data: dict[str, object]) -> bool:
+    """True when the v2 ``data`` object carries at least one non-empty lane."""
+    return any(isinstance(data.get(key), list) and data.get(key) for key in _LANE_KEYS)
+
+
 def _parse_document(document: object) -> PayloadReport:
     if not isinstance(document, dict):
         raise MalformedPayload("top-level JSON value must be an object")
@@ -244,7 +258,7 @@ def _parse_document(document: object) -> PayloadReport:
         raise MalformedPayload("'data.metrics' must be an array")
     if not isinstance(workouts, list):
         raise MalformedPayload("'data.workouts' must be an array")
-    if not metrics and not workouts:
+    if not metrics and not workouts and not _has_lane_data(data):
         raise MalformedPayload("payload carries no metrics and no workouts (empty v2 envelope)")
 
     unknown: list[dict[str, str]] = []

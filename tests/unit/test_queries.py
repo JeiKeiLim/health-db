@@ -184,6 +184,10 @@ class TestSchemaResource:
             "workout_heart_rate",
             "routes",
             "raw_ingest",
+            "ecgs",
+            "ecg_voltages",
+            "heart_rate_notifications",
+            "heart_rate_notification_samples",
             "auth_log",
         ]
 

@@ -749,6 +749,26 @@ _SCHEMA_TABLES: tuple[dict[str, object], ...] = (
         "key": "PK id (bigserial); sha256 UNIQUE",
     },
     {
+        "table": "ecgs",
+        "description": "ECG sessions (classification, sampling freq, avg HR, voltage count)",
+        "key": "PK id (identity); UNIQUE (source_name, start_ts) — latest-wins",
+    },
+    {
+        "table": "ecg_voltages",
+        "description": "ECG voltage samples (mcV) at UNIX-epoch timestamps, array order",
+        "key": "PK (ecg_id, seq); FK → ecgs ON DELETE CASCADE",
+    },
+    {
+        "table": "heart_rate_notifications",
+        "description": "high-heart-rate notification events (kind, threshold, window)",
+        "key": "PK id (identity); UNIQUE (source_name, start_ts) — latest-wins",
+    },
+    {
+        "table": "heart_rate_notification_samples",
+        "description": "notification HR/HRV samples (kind 'hr'|'hrv'; one ts may carry both)",
+        "key": "PK (notification_id, ts, kind); FK → heart_rate_notifications ON DELETE CASCADE",
+    },
+    {
         "table": "auth_log",
         "description": "401 audit (ts, ip, user_agent, reason — never secrets)",
         "key": "PK id (bigserial)",

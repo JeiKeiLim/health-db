@@ -94,6 +94,54 @@ ON CONFLICT (workout_id, ts) DO UPDATE SET
     v_acc = EXCLUDED.v_acc
 """.strip()
 
+# ECG + heart-rate-notification lanes (run 2026-09-17-normalizer-audit §2/§3/
+# §6): session tables upsert latest-wins on the UNIQUE (source_name, start_ts)
+# natural keys RETURNING the DB id — the pipeline resolves the normalizer's
+# array-position ``ref`` to that id before inserting child rows (voltages /
+# samples), so re-posted sessions attach children to the SAME parent row and
+# re-appends never happen (iron law 2).
+UPSERT_ECG = """
+INSERT INTO ecgs (source_name, start_ts, end_ts, classification,
+                  sampling_frequency, average_heart_rate, voltage_count)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (source_name, start_ts) DO UPDATE SET
+    end_ts = EXCLUDED.end_ts,
+    classification = EXCLUDED.classification,
+    sampling_frequency = EXCLUDED.sampling_frequency,
+    average_heart_rate = EXCLUDED.average_heart_rate,
+    voltage_count = EXCLUDED.voltage_count,
+    ingested_at = now()
+RETURNING id
+""".strip()
+
+UPSERT_ECG_VOLTAGE = """
+INSERT INTO ecg_voltages (ecg_id, seq, ts, voltage, units)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (ecg_id, seq) DO UPDATE SET
+    ts = EXCLUDED.ts,
+    voltage = EXCLUDED.voltage,
+    units = EXCLUDED.units
+""".strip()
+
+UPSERT_HRN = """
+INSERT INTO heart_rate_notifications (source_name, start_ts, end_ts, kind, threshold)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (source_name, start_ts) DO UPDATE SET
+    end_ts = EXCLUDED.end_ts,
+    kind = EXCLUDED.kind,
+    threshold = EXCLUDED.threshold,
+    ingested_at = now()
+RETURNING id
+""".strip()
+
+UPSERT_HRN_SAMPLE = """
+INSERT INTO heart_rate_notification_samples (notification_id, ts, kind, value, units)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (notification_id, ts, kind) DO UPDATE SET
+    value = EXCLUDED.value,
+    units = EXCLUDED.units
+""".strip()
+
 DELETE_ROLLUPS = "DELETE FROM daily_rollups WHERE day_kst = ANY(%s)"
 
 RECOMPUTE_ROLLUPS = """
@@ -133,11 +181,20 @@ SELECT_RAW_INGEST_SHA = "SELECT outcome FROM raw_ingest WHERE sha256 = %s"
 
 
 class _Ids:
-    """Per-transaction cache of metric/source ids (dim lookups repeat)."""
+    """Per-transaction cache of metric/source ids (dim lookups repeat).
+
+    The lane caches (``ecg_ids``/``hrn_ids``) map the normalizers'
+    array-position ``ref`` to the DB ``id`` RETURNed by the parent upsert:
+    the ref is unique within one payload's transaction, and children
+    (voltages / samples) resolve through it so re-posted payloads attach to
+    the same parent row instead of re-appending.
+    """
 
     def __init__(self) -> None:
         self._metrics: dict[str, int] = {}
         self._sources: dict[str, int] = {}
+        self.ecg_ids: dict[int, int] = {}
+        self.hrn_ids: dict[int, int] = {}
 
     def metric_id(self, conn: object, name: str, declared_unit: str = "") -> int:
         found = self._metrics.get(name)
