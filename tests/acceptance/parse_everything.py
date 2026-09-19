@@ -10,6 +10,8 @@ pytestmark: requires_pg — disposable postgres:18 container per conftest.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytestmark = [pytest.mark.parse_everything, pytest.mark.requires_pg]
@@ -148,12 +150,10 @@ def doc_lanes(
 
 def post_doc(api, payload: dict) -> dict:
     """Post an arbitrary v2 document through the real /api/ingest route."""
-    import json as _json
-
     from fastapi.testclient import TestClient  # noqa: F401  (api wraps it)
 
     res = api._client.post(
-        "/api/ingest", content=_json.dumps(payload).encode("utf-8"), headers=api._headers
+        "/api/ingest", content=json.dumps(payload).encode("utf-8"), headers=api._headers
     )
     assert res.status_code == 200, f"ingest failed: {res.status_code} {res.text[:200]}"
     return res.json()
@@ -274,6 +274,23 @@ class TestEcgLane:
         post_doc(api, doc_lanes(ecg=[ECG_SESSION]))
         assert pg.scalar("SELECT count(*) FROM ecgs") == 1
         assert pg.scalar("SELECT count(*) FROM ecg_voltages") == 3, "latest-wins, zero re-append"
+
+    def test_scenario5_malformed_ecg_row_counted_in_skipped_response(self, api, pg):
+        """Skip census visible through the API (zero-silent-drops): a
+        malformed ECG row (unparseable start) yields skipped.ecg == 1 in the
+        /api/ingest 200 body while the valid sibling session stores."""
+        res = api._client.post(
+            "/api/ingest",
+            content=json.dumps(
+                doc_lanes(ecg=[{**ECG_SESSION, "start": "bogus"}, ECG_SESSION])
+            ).encode(),
+            headers=api._headers,
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["skipped"]["ecg"] == 1
+        assert pg.scalar("SELECT count(*) FROM ecgs") == 1, "valid sibling session stores"
+        assert pg.scalar("SELECT count(*) FROM ecg_voltages") == 3
 
 
 class TestNotificationLane:

@@ -776,8 +776,13 @@ _SCHEMA_TABLES: tuple[dict[str, object], ...] = (
 )
 
 
-def schema_resource() -> dict[str, object]:
-    """Table/column summary for ``health://schema`` (static shape, no DB)."""
+def schema_resource(pool: ConnectionPool | None = None) -> dict[str, object]:
+    """Table/column summary for ``health://schema`` (static shape, no DB).
+
+    ``pool`` is accepted (and unused) for call-site uniformity with the
+    other query helpers — the table catalog is static, so no DB round-trip
+    is needed regardless.
+    """
     return {
         "schema": "health-db",
         "tables": [dict(table) for table in _SCHEMA_TABLES],

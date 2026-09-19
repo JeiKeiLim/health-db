@@ -132,6 +132,9 @@ class _FakeTxn:
         self.rollups: list[tuple[int, str, float]] = []
         self.raw_ingest: dict[str, dict[str, Any]] = {}
         self.statements: list[tuple[str, tuple]] = []
+        # Real executemany batch sizes: (sql-fragments, len(seq)) per call
+        # (the multi-batch voltage test observes the actual chunk sizes).
+        self.executemany_sizes: list[tuple[str, int]] = []
         self._next_metric = 1
         self._next_source = 1
         self._next_ecg = 1
@@ -311,8 +314,13 @@ class _FakeCursor:
         return False
 
     def executemany(self, sql: str, seq: Any) -> None:
-        for params in seq:
-            self._txn.execute(sql, tuple(params))
+        # Record the REAL batch size the pipeline's loop handed to this
+        # statement (item 4: the batching arithmetic must be observed, not
+        # re-implemented — the multi-batch test reads this list).
+        params = [tuple(p) for p in seq]
+        self._txn.executemany_sizes.append((sql.split()[0] + "-" + sql.split()[2], len(params)))
+        for p in params:
+            self._txn.execute(sql, p)
 
 
 class _FakeResult:
@@ -378,16 +386,44 @@ class TestLaneSqlConstants:
         assert ECG_VOLTAGE_BATCH == 10_000
 
     def test_voltage_batches_never_exceed_cap(self):
-        """The batching loop's chunk boundaries honor ECG_VOLTAGE_BATCH even
-        beyond one batch (600k-voltage backfill → 71 statements)."""
-        cap = 10_000
-        total = 23_456  # arbitrary non-multiple size
-        sizes = [
-            min(cap, total - offset)
-            for offset in range(0, total, cap)
-        ]
+        """The REAL ingest_payload loop chunks >10k voltages: drive it with
+        10,003 voltages through the fake pool and assert every row reaches
+        the upsert while no single executemany call exceeded the cap (the
+        fake cursor records each real batch size — the batching arithmetic
+        is observed, never re-implemented here)."""
+        from health_db.normalize import ECG_VOLTAGE_BATCH
+
+        total = 10_003  # one full batch + a 3-row tail (non-multiple size)
+        session = {
+            **ECG_SESSION,
+            "numberOfVoltageMeasurements": total,
+            "voltageMeasurements": [
+                {
+                    "voltage": -1.0 - (i % 7) * 0.01,
+                    "date": 1760233506.862702 + i * 0.002,
+                    "units": "mcV",
+                }
+                for i in range(total)
+            ],
+        }
+        doc = lane_doc(ecg=[session])
+        pool = _FakePool()
+        result = ingest_payload(
+            pool, doc, sha256=_sha_of(doc), body=json.dumps(doc).encode("utf-8")
+        )
+        assert result.outcome == "stored"
+        # Every input row was offered to the SQL helper, exactly once.
+        assert len(pool.txn.ecg_voltages) == total
+        assert len({seq for (_, seq) in pool.txn.ecg_voltages}) == total
+        # The observed chunk sizes honor the cap and sum to the total.
+        sizes = [size for (frag, size) in pool.txn.executemany_sizes if "voltages" in frag]
         assert sum(sizes) == total
-        assert all(size <= cap for size in sizes)
+        assert all(size <= ECG_VOLTAGE_BATCH for size in sizes), (
+            f"no executemany may exceed the {ECG_VOLTAGE_BATCH} cap: {sizes}"
+        )
+        assert sizes == [ECG_VOLTAGE_BATCH, total - ECG_VOLTAGE_BATCH], (
+            "one full batch + the remainder tail"
+        )
 
 
 # ---------------------------------------------------------------------------
