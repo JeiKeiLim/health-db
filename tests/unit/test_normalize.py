@@ -25,14 +25,18 @@ from health_db.normalize import (
     BLOOD_PRESSURE_DIASTOLIC,
     BLOOD_PRESSURE_SYSTOLIC,
     CUMULATIVE_UNITS,
+    ECG_SKIP,
     KJ_PER_KCAL,
     LB_PER_KG,
     SLEEP_IN_BED,
     SLEEP_NO_VALUE,
     ST_PER_KG,
     UNIT_UNCONVERTIBLE,
+    EcgRow,
+    EcgVoltageRow,
     SampleRow,
     WorkoutRow,
+    _ecg_rows,
     _qty_for_unit,
     _qty_of,
     _sum_qty_of,
@@ -1195,3 +1199,199 @@ class TestQtyHelpers:
         assert _sum_qty_of(4) == 4.0
         assert _sum_qty_of({"qty": 4}) == 4.0
         assert _sum_qty_of([{"qty": 1}, 2, {"value": 3}]) == 6.0
+
+
+# ---------------------------------------------------------------------------
+# ECG session lane (job-5, run 2026-09-17-normalizer-audit §2)
+# ---------------------------------------------------------------------------
+
+
+# Fixture mirrored verbatim from tests/acceptance/parse_everything.py
+# (scenario 5 — trimmed real backfill ECG shape).
+ECG_SESSION = {
+    "source": "심전도",
+    "start": "2025-10-12 10:45:06 +0900",
+    "end": "2025-10-12 10:45:36 +0900",
+    "samplingFrequency": 512,
+    "numberOfVoltageMeasurements": 3,
+    "classification": "정상 동율 리듬",
+    "averageHeartRate": 68,
+    "voltageMeasurements": [
+        {"voltage": -10.528610229492188, "date": 1760233506.862702, "units": "mcV"},
+        {"voltage": -8.956151962280273, "date": 1760233506.864655, "units": "mcV"},
+        {"voltage": -7.150754928777866, "date": 1760233506.8666081, "units": "mcV"},
+    ],
+}
+
+
+def ecg_doc(sessions: list | None = None) -> dict:
+    data: dict = {}
+    if sessions is not None:
+        data["ecg"] = sessions
+    return {"data": data}
+
+
+class TestEcgRows:
+    def test_session_fixture_fields(self):
+        sessions, voltages, skips = _ecg_rows(ecg_doc([ECG_SESSION]))
+        assert skips == {}
+        assert len(sessions) == 1
+        row = sessions[0]
+        assert isinstance(row, EcgRow)
+        assert row.ref == 0
+        assert row.source_name == "심전도"
+        assert row.start_ts == datetime(2025, 10, 12, 10, 45, 6, tzinfo=KST)
+        assert row.end_ts == datetime(2025, 10, 12, 10, 45, 36, tzinfo=KST)
+        assert row.classification == "정상 동율 리듬"
+        assert row.sampling_frequency == 512
+        assert row.average_heart_rate == 68
+        assert row.voltage_count == 3
+
+    def test_three_voltages_with_unix_epoch_ts(self):
+        # VERIFIED (42/42 real backfill sessions): voltage `date` is UNIX
+        # epoch seconds — first voltage == session start ±2s under this
+        # reading (2025-10-12 01:45:06.862702 UTC == 10:45:06 KST). The
+        # predecessor CF-absolute reading would yield year-2056 values.
+        _, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION]))
+        assert len(voltages) == 3
+        first = voltages[0]
+        assert isinstance(first, EcgVoltageRow)
+        assert first.ts == datetime(2025, 10, 12, 1, 45, 6, 862702, tzinfo=UTC), (
+            "voltage ts must be UNIX-epoch converted (never CF-absolute)"
+        )
+        assert [v.seq for v in voltages] == [0, 1, 2]
+        assert [v.ecg_ref for v in voltages] == [0, 0, 0]
+        assert voltages[0].voltage == pytest.approx(-10.528610229492188)
+        assert voltages[1].voltage == pytest.approx(-8.956151962280273)
+        assert voltages[2].voltage == pytest.approx(-7.150754928777866)
+        assert {v.units for v in voltages} == {"mcV"}
+
+    def test_first_voltage_within_2s_of_session_start(self):
+        # The verification invariant from the spec, asserted directly:
+        # session start (KST 10:45:06 == 01:45:06 UTC) vs first voltage ts.
+        sessions, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION]))
+        delta = abs((voltages[0].ts - sessions[0].start_ts).total_seconds())
+        assert delta <= 2.0
+
+    def test_ref_links_sessions_to_their_voltages(self):
+        # Two sessions: each voltage row's ecg_ref must track its session's
+        # index (pipeline resolves ref → DB id; job-7).
+        second = {
+            **ECG_SESSION,
+            "start": "2025-10-13 10:45:06 +0900",
+            "end": "2025-10-13 10:45:36 +0900",
+        }
+        sessions, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION, second]))
+        assert [s.ref for s in sessions] == [0, 1]
+        assert {v.ecg_ref for v in voltages} == {0, 1}
+        assert len([v for v in voltages if v.ecg_ref == 0]) == 3
+        assert len([v for v in voltages if v.ecg_ref == 1]) == 3
+
+    def test_unparseable_start_session_skipped_and_counted(self):
+        bad = {**ECG_SESSION, "start": "bogus"}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad, ECG_SESSION]))
+        assert len(sessions) == 1 and sessions[0].ref == 1
+        assert len(voltages) == 3 and all(v.ecg_ref == 1 for v in voltages)
+        assert skips == {ECG_SKIP: 1}
+
+    def test_missing_start_session_skipped(self):
+        bad = {k: v for k, v in ECG_SESSION.items() if k != "start"}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_unparseable_end_session_skipped(self):
+        # end_ts is NOT NULL (spec §6): an unparseable end cannot store.
+        bad = {**ECG_SESSION, "end": "bogus"}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_empty_voltage_measurements_session_skipped(self):
+        bad = {**ECG_SESSION, "voltageMeasurements": []}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == [] and voltages == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_missing_voltage_measurements_session_skipped(self):
+        bad = {k: v for k, v in ECG_SESSION.items() if k != "voltageMeasurements"}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_non_string_source_session_skipped(self):
+        # source is the natural key's first half — a non-string cannot upsert.
+        bad = {**ECG_SESSION, "source": 42}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_malformed_voltage_point_dropped_individually(self):
+        # A partially-corrupt session keeps its good samples; bad points
+        # are counted, never silent (zero-silent-drops contract).
+        bad_measurements = [
+            {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"},
+            {"voltage": None, "date": 1760233506.864655, "units": "mcV"},
+            {"voltage": -2.0, "date": "not-a-number", "units": "mcV"},
+            {"date": 1760233506.866608, "units": "mcV"},
+            "not-a-dict",
+        ]
+        bad = {**ECG_SESSION, "voltageMeasurements": bad_measurements}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].seq == 0
+        assert skips == {ECG_SKIP: 4}
+
+    def test_optional_session_scalars_default_to_none(self):
+        # spec §6: classification / sampling_frequency / average_heart_rate
+        # are nullable; numberOfVoltageMeasurements falls back to the parsed
+        # array length when absent.
+        minimal = {
+            "source": "심전도",
+            "start": "2025-10-12 10:45:06 +0900",
+            "end": "2025-10-12 10:45:36 +0900",
+            "voltageMeasurements": ECG_SESSION["voltageMeasurements"],
+        }
+        sessions, voltages, _ = _ecg_rows(ecg_doc([minimal]))
+        row = sessions[0]
+        assert row.classification is None
+        assert row.sampling_frequency is None
+        assert row.average_heart_rate is None
+        assert row.voltage_count == 3, "declared count absent → parsed length"
+        assert len(voltages) == 3
+
+    def test_non_dict_session_skipped(self):
+        sessions, _, skips = _ecg_rows(ecg_doc(["nope", 42, ECG_SESSION]))
+        assert [s.ref for s in sessions] == [2]
+        assert skips == {ECG_SKIP: 2}
+
+    def test_absent_or_non_list_lane_yields_nothing_no_skips(self):
+        # An absent lane is not a drop; a malformed lane value likewise
+        # yields nothing (defensive parity with metric_rows/workout_rows).
+        assert _ecg_rows(ecg_doc(None)) == ([], [], {})
+        assert _ecg_rows(ecg_doc([])) == ([], [], {})
+        assert _ecg_rows({}) == ([], [], {})
+        assert _ecg_rows({"data": {"ecg": "nope"}}) == ([], [], {})
+        assert _ecg_rows(None) == ([], [], {})
+
+    def test_lane_absent_from_metrics_payload_no_skips(self):
+        # A normal metrics payload carries no `ecg` key: zero skips.
+        document = doc([metric("step_count", [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}])])
+        assert _ecg_rows(document) == ([], [], {})
+
+    def test_frozen_dataclasses(self):
+        sessions, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION]))
+        with pytest.raises(Exception):
+            sessions[0].voltage_count = 9  # type: ignore[misc]
+        with pytest.raises(Exception):
+            voltages[0].voltage = 0.0  # type: ignore[misc]
+
+
+class TestEcgVoltageBatchConstant:
+    def test_batch_cap_is_10k(self):
+        # spec §8: ECG voltage inserts are batched ≤10k per executemany
+        # (600,000 voltages on the real backfill); the constant lives next
+        # to the normalizer so the pipeline imports one shared value.
+        from health_db.normalize import ECG_VOLTAGE_BATCH
+
+        assert ECG_VOLTAGE_BATCH == 10_000

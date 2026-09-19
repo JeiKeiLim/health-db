@@ -60,13 +60,23 @@ Workout field shapes (HAE v2 real payloads vs simplified fixtures):
   ``int(round(Avg))`` with a ``bpm`` fallback.
 - ``heartRateRecovery`` is a real point LIST, kept verbatim as a JSON array
   in the ``heart_rate_recovery`` jsonb column.
+
+Session lane (run 2026-09-17-normalizer-audit §2): ``data.ecg`` → ``ecgs`` +
+``ecg_voltages`` (:func:`_ecg_rows`; session rows like workouts — OUT of
+``raw_samples``/``daily_rollups``). Voltage timestamps are UNIX EPOCH
+SECONDS (``datetime.fromtimestamp(..., tz=UTC)`` — verified 42/42 real
+backfill sessions: first voltage == session start ±2s under this reading;
+CF-absolute would yield year-2056 values, and the predecessor CF epoch
+applies only to the retired .hae lane, never REST ECG). Dropped sessions and
+dropped voltage samples are COUNTED (``ecg`` skip-reason, spec §5), never
+silent.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 KJ_PER_KCAL = 4.184
 
@@ -323,6 +333,52 @@ class RouteRow:
     elevation: float | None = None
     h_acc: float | None = None
     v_acc: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EcgRow:
+    """One ``ecgs`` row (upsert key = (source_name, start_ts), UNIQUE).
+
+    ``ref`` is the session's index within ``data.ecg`` (the stable
+    array-position reference linking this row to its voltage rows) —
+    job-7's pipeline resolves it to the DB ``id`` after the session upsert.
+    ``voltage_count`` is the number of voltage points the session declared
+    via ``numberOfVoltageMeasurements`` (NOT the parsed array length: the
+    real corpus keeps them equal, and the pipeline must detect any drift
+    rather than silently re-counting).
+    """
+
+    ref: int
+    source_name: str
+    start_ts: datetime
+    end_ts: datetime
+    classification: str | None = None
+    sampling_frequency: int | None = None
+    average_heart_rate: int | None = None
+    voltage_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class EcgVoltageRow:
+    """One ``ecg_voltages`` row (PK (ecg_id, seq); ``ecg_id`` = parent ``ref``).
+
+    ``ts`` is UNIX-epoch converted (see module docstring — verified 42/42
+    against the backfill corpus); ``voltage`` stays mcV pass-through; ``seq``
+    is the index in the payload's ``voltageMeasurements`` array.
+    """
+
+    ecg_ref: int
+    seq: int
+    ts: datetime
+    voltage: float
+    units: str
+
+
+# Skip-reason key (run spec §5): an ECG session dropped for an unparseable
+# start (cannot upsert latest-wins without (source, start)) or an empty
+# voltageMeasurements array (a session without samples carries no data).
+# Counted by job-4's `skipped.ecg` ingest-response accounting — never silent.
+ECG_SKIP = "ecg"
 
 
 def _num(value: object) -> float | None:
@@ -827,3 +883,159 @@ def workout_rows(
             )
         )
     return result
+
+
+def _ecg_session_fields(
+    session: dict[str, object],
+) -> tuple[datetime, datetime, str | None, int | None, int | None, int] | None:
+    """Extract the scalars of one ECG session, or None when it must be skipped.
+
+    ``start``/``end`` are HAE ``yyyy-MM-dd HH:mm:ss Z`` strings parsed by
+    :func:`_parse_ts`; a session missing a parseable start or end cannot
+    upsert latest-wins (the (source_name, start_ts) natural key needs the
+    start; end_ts is NOT NULL per spec §6), so it is dropped and counted
+    (``skipped.ecg``, spec §5). ``samplingFrequency`` and
+    ``averageHeartRate`` are optional scalars (spec §6: nullable columns);
+    ``numberOfVoltageMeasurements`` falls back to 0 — the pipeline upsert
+    stores the parsed array length as authoritative when the count is 0.
+    """
+    start = _parse_ts(session.get("start"))
+    if start is None:
+        return None
+    end = _parse_ts(session.get("end"))
+    if end is None:
+        return None
+    classification = session.get("classification")
+    frequency = _num(session.get("samplingFrequency"))
+    avg_hr = _num(session.get("averageHeartRate"))
+    declared = _num(session.get("numberOfVoltageMeasurements"))
+    return (
+        start,
+        end,
+        classification if isinstance(classification, str) and classification else None,
+        int(frequency) if frequency is not None else None,
+        int(avg_hr) if avg_hr is not None else None,
+        int(declared) if declared is not None else 0,
+    )
+
+
+def _ecg_voltage_rows(
+    ecg_ref: int, measurements: object
+) -> tuple[list[EcgVoltageRow], int]:
+    """``voltageMeasurements`` → (EcgVoltageRows, dropped_count).
+
+    Voltage ``date`` is a UNIX epoch SECONDS number (verified 42/42: first
+    voltage == session start ±2s under this reading; CF-absolute would give
+    year-2056 — the predecessor CF epoch belongs to the retired .hae lane,
+    NOT REST ECG). Non-numeric/missing date or voltage values drop the
+    individual point (counted) while the rest of the array is kept: a
+    partially-corrupt session must not poison its good samples.
+    """
+    rows: list[EcgVoltageRow] = []
+    dropped = 0
+    if not isinstance(measurements, list):
+        return [], 0
+    for seq, point in enumerate(measurements):
+        if not isinstance(point, dict):
+            dropped += 1
+            continue
+        date_value = point.get("date")
+        if isinstance(date_value, bool) or not isinstance(date_value, (int, float)):
+            dropped += 1
+            continue
+        voltage = _num(point.get("voltage"))
+        if voltage is None:
+            dropped += 1
+            continue
+        units = point.get("units")
+        rows.append(
+            EcgVoltageRow(
+                ecg_ref=ecg_ref,
+                seq=seq,
+                ts=datetime.fromtimestamp(date_value, tz=UTC),
+                voltage=voltage,
+                units=units if isinstance(units, str) and units else "mcV",
+            )
+        )
+    return rows, dropped
+
+
+def _ecg_rows(document: object) -> tuple[list[EcgRow], list[EcgVoltageRow], dict[str, int]]:
+    """Normalize ``data.ecg`` into (EcgRows, EcgVoltageRows, skip census).
+
+    Session lanes (like workouts): rows go to the ``ecgs``/``ecg_voltages``
+    tables via job-7's upserts — OUT of ``raw_samples`` and
+    ``daily_rollups``. ``ref`` is the session's index in ``data.ecg``; the
+    pipeline resolves it to the DB ``id`` after the parent upsert, so
+    voltage rows never need a DB round-trip here (pure, no I/O).
+
+    Skips (counted under ``ecg``, spec §5): sessions with an unparseable
+    start/end, sessions whose parsed voltage array is empty (nothing to
+    store), and malformed voltage points. ``source`` is the string
+    ``source`` field (real corpus: ``"심전도"``); a non-string source is
+    skipped like any other unusable natural-key half. Empty/non-list
+    ``data.ecg`` yields nothing with no skips — an absent lane is not a
+    drop. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
+    if not isinstance(document, dict):
+        return [], [], skips
+    data = document.get("data")
+    if not isinstance(data, dict):
+        return [], [], skips
+    sessions = data.get("ecg")
+    if not isinstance(sessions, list):
+        return [], [], skips
+
+    session_rows: list[EcgRow] = []
+    voltage_rows: list[EcgVoltageRow] = []
+    dropped_total = 0
+    for ref, session in enumerate(sessions):
+        if not isinstance(session, dict):
+            dropped_total += 1
+            continue
+        source_name = session.get("source")
+        if not isinstance(source_name, str) or not source_name:
+            dropped_total += 1
+            continue
+        fields = _ecg_session_fields(session)
+        if fields is None:
+            dropped_total += 1
+            continue
+        start, end, classification, frequency, avg_hr, declared_count = fields
+        parsed_voltages, dropped_voltages = _ecg_voltage_rows(
+            ref, session.get("voltageMeasurements")
+        )
+        if not parsed_voltages:
+            # Empty (or fully malformed) voltageMeasurements: a session
+            # without samples carries no data — skip the session row too.
+            dropped_total += 1 + dropped_voltages
+            continue
+        dropped_total += dropped_voltages
+        session_rows.append(
+            EcgRow(
+                ref=ref,
+                source_name=source_name,
+                start_ts=start,
+                end_ts=end,
+                classification=classification,
+                sampling_frequency=frequency,
+                average_heart_rate=avg_hr,
+                # Declared count is authoritative on the real corpus (42/42
+                # sessions carry it); the parsed length covers a payload
+                # that omits the field.
+                voltage_count=declared_count or len(parsed_voltages),
+            )
+        )
+        voltage_rows.extend(parsed_voltages)
+    if dropped_total:
+        # Sparse census parity with metric_rows_detailed: zero drops →
+        # empty dict; job-4's merge_skipped treats absent keys as 0.
+        skips[ECG_SKIP] = dropped_total
+    return session_rows, voltage_rows, skips
+
+
+# Voltage insert batching cap (spec §8: executemany batches ≤10k rows per
+# statement — the 42-session backfill carries 600,000 voltages; the
+# pipeline (job-7) chunks with this limit).
+ECG_VOLTAGE_BATCH = 10_000
