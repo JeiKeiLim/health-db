@@ -1398,6 +1398,40 @@ class TestEcgRows:
         assert len(sessions) == 1
         assert len(voltages) == 1 and voltages[0].seq == 1
         assert voltages[0].voltage == pytest.approx(3.5)
+
+    def test_voltage_huge_int_value_dropped_and_counted(self):
+        # 10**400 parses natively as a Python int (bypassing the JSON parse
+        # guards) and overflows _num's float() — the point drops+counts
+        # under 'ecg' while the session and its valid sibling voltages are
+        # kept (never-crash discipline, mirror of the HRN value guard).
+        good = {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}
+        bad_point = {"voltage": 10**400, "date": 1760233506.864655, "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [bad_point, good]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].seq == 1
+        assert voltages[0].voltage == pytest.approx(-1.0)
+        assert skips == {ECG_SKIP: 1}
+
+    def test_voltage_value_nan_inf_dropped_and_counted(self):
+        # NaN/inf voltage values are finite-agnostic scalars the numeric
+        # gate accepts but the double-precision column cannot mean — the
+        # sibling HRN guard's exception path also covers int(NaN)'s
+        # ValueError here via float() conversion.
+        good = {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}
+        bad = {
+            **ECG_SESSION,
+            "voltageMeasurements": [
+                {"voltage": float("nan"), "date": 1760233506.864655, "units": "mcV"},
+                {"voltage": float("inf"), "date": 1760233506.866608, "units": "mcV"},
+                good,
+            ],
+        }
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].seq == 2
+        assert voltages[0].voltage == pytest.approx(-1.0)
+        assert skips == {ECG_SKIP: 2}
         assert voltages[0].ts == good_ts()
         assert skips == {ECG_SKIP: 2}
 

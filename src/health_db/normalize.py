@@ -88,6 +88,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
+from math import isfinite
 
 KJ_PER_KCAL = 4.184
 
@@ -1012,8 +1013,16 @@ def _ecg_voltage_rows(
         if isinstance(date_value, bool) or not isinstance(date_value, (int, float)):
             dropped += 1
             continue
-        voltage = _num(point.get("voltage"))
-        if voltage is None:
+        # Huge-int voltage literals (10**400 is JSON-legal) overflow float(),
+        # and NaN/inf values are not storable sample magnitudes — guard
+        # exactly like the sibling HRN value conversion (spec §5: drop the
+        # point, count it, never crash the payload).
+        try:
+            voltage = _num(point.get("voltage"))
+        except (OverflowError, OSError, ValueError):
+            dropped += 1
+            continue
+        if voltage is None or not isfinite(voltage):
             dropped += 1
             continue
         units = point.get("units")
