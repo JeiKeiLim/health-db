@@ -356,7 +356,6 @@ def main(argv: list[str] | None = None) -> int:
         queries.UnknownMetric,
         queries.UnknownWorkout,
         queries.UnknownEcg,
-        queries.UnknownHrn,
         queries.InvalidParameter,
         ValueError,
     ) as exc:

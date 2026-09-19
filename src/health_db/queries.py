@@ -614,12 +614,19 @@ def _ts_iso(value: object) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _bounded_limit(limit: int, default: int, maximum: int, label: str) -> int:
-    """Clamp a list/page ``limit`` into ``[1, maximum]`` (raw_samples contract).
+def _bounded_limit(
+    limit: int | None, default: int, maximum: int, label: str
+) -> int:
+    """Resolve + clamp a list/page ``limit`` into ``[1, maximum]``.
 
-    Non-int types raise :class:`InvalidParameter` (actionable, never a
-    stack trace); out-of-range ints clamp the way ``raw_samples`` does.
+    ``None`` selects ``default`` (spec §7: callers omit the arg to get the
+    documented page size); non-int types raise :class:`InvalidParameter`
+    (actionable, never a stack trace); out-of-range ints clamp the way
+    ``raw_samples`` does. Bools are rejected even though ``bool`` subclasses
+    ``int`` (a ``True`` limit is never a page size).
     """
+    if limit is None:
+        return default
     if not isinstance(limit, int) or isinstance(limit, bool):
         raise InvalidParameter(f"{label} must be an integer")
     if limit < 1:
@@ -644,13 +651,14 @@ def _day_range_where(alias: str, frm: str, to: str, params: list[object]) -> str
 def list_ecgs(
     frm: str = "",
     to: str = "",
-    limit: int = ECG_HRN_DEFAULT_LIMIT,
+    limit: int | None = None,
     pool: ConnectionPool | None = None,
 ) -> dict[str, object]:
     """ECG sessions in [from, to] KST days (inclusive), newest first.
 
-    ``limit`` clamps to ``[1, 500]`` (spec §7: default 50, max 500); each
-    row carries the child voltage count instead of the voltage payload.
+    ``limit`` clamps to ``[1, 500]`` (spec §7: default 50, max 500; ``None``
+    selects the 50 default); each row carries the child voltage count
+    instead of the voltage payload.
     """
     limit = _bounded_limit(limit, ECG_HRN_DEFAULT_LIMIT, ECG_HRN_MAX_LIMIT, "limit")
     params: list[object] = []
@@ -689,14 +697,15 @@ def list_ecgs(
 def get_ecg_detail(
     ecg_id: str,
     voltage_offset: int = 0,
-    voltage_limit: int = VOLTAGE_DEFAULT_LIMIT,
+    voltage_limit: int | None = None,
     pool: ConnectionPool | None = None,
 ) -> dict[str, object]:
     """One ECG session + a page of its voltage samples (array/seq order).
 
-    ``voltage_limit`` clamps to ``[1, 10000]`` (default 1000 — spec §7);
-    ``next_voltage_offset`` is ``None`` on the last page. Unknown ids raise
-    :class:`UnknownEcg` (actionable: points at ``list_ecgs``).
+    ``voltage_limit`` clamps to ``[1, 10000]`` (default 1000 — spec §7;
+    ``None`` selects the default); ``next_voltage_offset`` is ``None`` on
+    the last page. Unknown ids raise :class:`UnknownEcg` (actionable:
+    points at ``list_ecgs``).
     """
     ecg_id_num = _validated_lane_id(ecg_id, "ECG", UnknownEcg)
     voltage_offset = _validated_offset(voltage_offset, "voltage_offset")
@@ -768,28 +777,17 @@ class UnknownEcg(Exception):
         )
 
 
-class UnknownHrn(Exception):
-    """A notification event id is not in ``heart_rate_notifications``.
-    Actionable: points at ``list_heart_notifications``."""
-
-    def __init__(self, notification_id: str) -> None:
-        self.notification_id = notification_id
-        super().__init__(
-            f"heart-rate notification '{notification_id}' not found — call "
-            "list_heart_notifications (or narrow the from/to range) for available event ids"
-        )
-
-
 def list_heart_notifications(
     frm: str = "",
     to: str = "",
-    limit: int = ECG_HRN_DEFAULT_LIMIT,
+    limit: int | None = None,
     pool: ConnectionPool | None = None,
 ) -> dict[str, object]:
     """Heart-rate-notification events in [from, to] KST days, newest first.
 
-    ``limit`` clamps to ``[1, 500]`` (spec §7: default 50, max 500); each
-    event embeds its HR/HRV sample rows ordered by (ts, kind).
+    ``limit`` clamps to ``[1, 500]`` (spec §7: default 50, max 500; ``None``
+    selects the 50 default); each event embeds its HR/HRV sample rows
+    ordered by (ts, kind).
     """
     limit = _bounded_limit(limit, ECG_HRN_DEFAULT_LIMIT, ECG_HRN_MAX_LIMIT, "limit")
     params: list[object] = []
@@ -861,8 +859,8 @@ def _validated_offset(offset: int, label: str) -> int:
 def _validated_lane_id(value: str, label: str, exc_type: type[Exception]) -> int:
     """Parse a lane-row id (integer identity) or raise the caller's error type.
 
-    ``exc_type`` is :class:`UnknownEcg` / :class:`UnknownHrn` — the same
-    actionable shape the workout path uses with :class:`UnknownWorkout`.
+    ``exc_type`` is :class:`UnknownEcg` — the same actionable shape the
+    workout path uses with :class:`UnknownWorkout`.
     """
     try:
         return int(str(value))
