@@ -431,7 +431,7 @@ class TestMcpTools:
         from health_db import queries
 
         schema = queries.schema_resource(pool=pg.pool)
-        tables = {t["name"] for t in schema["tables"]}
+        tables = {t["table"] for t in schema["tables"]}
         assert {
             "ecgs", "ecg_voltages", "heart_rate_notifications", "heart_rate_notification_samples",
         } <= tables
