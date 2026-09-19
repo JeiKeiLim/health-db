@@ -146,10 +146,11 @@ class TestWrongShapeRejected:
              "end": "2025-10-12 10:45:36 +0900", "voltageMeasurements": [
                  {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}]}
         ]}}).encode())
-        # _classify_data_type sees empty metrics AND empty workouts: the
-        # contract enum falls back to 'workouts' (lane presence never adds a
-        # third enum value — raw_ingest.data_type stays in {'metrics','workouts'}).
-        assert report.data_type == "workouts"
+        # _classify_data_type: a lane-only payload (no metrics, no workouts)
+        # labels BOTH the response and raw_ingest.data_type with the lane
+        # that carried it — one shared classifier, so the two surfaces can
+        # never diverge.
+        assert report.data_type == "ecg"
         assert report.skipped["ecg"] == 0
 
     def test_lane_only_hrn_payload_accepted(self):
@@ -607,6 +608,28 @@ class TestCountingAndClassification:
         report_w = parse(wrap([], [{"id": "A", "name": "Walk"}]))
         assert report_m.data_type in ("metrics", "workouts")
         assert report_w.data_type in ("metrics", "workouts")
+
+    def test_data_type_lane_only_labels_lane_key(self):
+        # One shared classifier feeds the response AND raw_ingest.data_type:
+        # a lane-only payload carries the lane key as its label (job-7 eval
+        # reconciliation — the surfaces can never diverge).
+        report_ecg = parse(
+            json.dumps(
+                {"data": {"metrics": [], "workouts": [], "ecg": [
+                    {"source": "심전도", "start": "2025-10-12 10:45:06 +0900",
+                     "end": "2025-10-12 10:45:36 +0900", "voltageMeasurements": [
+                         {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}]}
+                ]}}
+            ).encode()
+        )
+        report_hrn = parse(json.dumps(
+            {"data": {"metrics": [], "workouts": [], "heartRateNotifications": [
+                {"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:49:20Z",
+                 "heartNotification": "high_heart_rate_notification",
+                 "source": {"name": "Watch"}}]}}
+        ).encode())
+        assert report_ecg.data_type == "ecg"
+        assert report_hrn.data_type == "heartRateNotifications"
 
     def test_metrics_only_envelope_without_workouts_key(self):
         report = parse(json.dumps({"data": {"metrics": [metric("x", [])]}}).encode())

@@ -62,7 +62,7 @@ from health_db.normalize import (
     SampleRow,
     workout_rows,
 )
-from health_db.payloads import empty_skipped, merge_skipped
+from health_db.payloads import _classify_data_type, empty_skipped, merge_skipped
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -416,6 +416,13 @@ def ingest_payload(
             automation_name, automation_id, session_id = _parse_headers(headers or {})
             recorded_outcome = OUTCOME_REPAIRED if (force and existing is not None) else outcome
             statement = UPSERT_RAW_INGEST if force else INSERT_RAW_INGEST
+            # Same classifier as the /api/ingest response (payloads.
+            # _classify_data_type): a lane-only payload labels BOTH surfaces
+            # with the lane that carried it — the two data_type labels can
+            # never diverge.
+            data_type = _classify_data_type(
+                len(metric_groups), len(workout_entries), data
+            )
             conn.execute(
                 statement,
                 (
@@ -423,7 +430,7 @@ def ingest_payload(
                     automation_name,
                     automation_id,
                     session_id,
-                    "metrics" if metric_groups or not workout_entries else "workouts",
+                    data_type,
                     body.decode("utf-8"),
                     recorded_outcome,
                 ),

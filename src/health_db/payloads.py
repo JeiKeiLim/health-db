@@ -48,11 +48,13 @@ Counting semantics (receipt counts, per decomposition job slice-1-payloads):
   (one point = one sample regardless of shape).
 - ``workouts`` = number of entries in ``data.workouts``.
 
-``data_type`` stays within the ``raw_ingest.data_type`` contract enum
-(``'metrics' | 'workouts'``): ``"metrics"`` whenever any metric groups are
-present (metrics take precedence when both arrays are non-empty), else
-``"workouts"``. Empty payloads are rejected as malformed, so ``"mixed"`` /
-``"empty"`` values never occur.
+``data_type`` labels the surface that carried the payload (one shared
+classifier — :func:`_classify_data_type` — feeds BOTH the /api/ingest
+response and the ``raw_ingest.data_type`` audit row): ``"metrics"``
+whenever any metric groups are present (metrics take precedence), else
+``"workouts"``, else the lane key a lane-only payload carried (``'ecg'`` /
+``'heartRateNotifications'``). Empty payloads are rejected as malformed,
+so ``"mixed"`` / ``"empty"`` values never occur.
 
 This module performs no I/O and holds no state: every function is pure and
 safe to call concurrently.
@@ -66,7 +68,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-DataType = Literal["metrics", "workouts"]
+DataType = Literal["metrics", "workouts", "ecg", "heartRateNotifications"]
 
 # Visible-skip accounting keys (run spec §5 — zero-silent-drops contract).
 # Frozen set: every dropped data point increments exactly ONE of these
@@ -221,14 +223,26 @@ def _inspect_workout(workout: object) -> dict[str, str] | None:
     return None
 
 
-def _classify_data_type(n_metric_groups: int, n_workouts: int) -> DataType:
-    """Contract enum only (``'metrics' | 'workouts'``); metrics take precedence.
+def _classify_data_type(
+    n_metric_groups: int, n_workouts: int, lanes: Mapping[str, object] | None = None
+) -> DataType:
+    """Label the payload with the surface that carried it; metrics win.
 
-    Both arrays non-empty (not the per-automation norm, but tolerated) classifies
-    as ``"metrics"``; empty payloads never reach here (rejected as malformed).
+    Precedence (simplest consistent rule): ``"metrics"`` whenever any metric
+    groups are present, else ``"workouts"``, else — a lane-only payload (no
+    metrics AND no workouts) — the FIRST lane key present (``'ecg'`` /
+    ``'heartRateNotifications'``). Both the /api/ingest response and the
+    ``raw_ingest.data_type`` audit row derive from this one function, so
+    the two labels cannot diverge. Empty payloads never reach here
+    (rejected as malformed).
     """
     if n_metric_groups:
         return "metrics"
+    if n_workouts:
+        return "workouts"
+    for lane_key in _LANE_KEYS:
+        if lanes and isinstance(lanes.get(lane_key), list) and lanes[lane_key]:
+            return lane_key  # type: ignore[return-value]
     return "workouts"
 
 
@@ -281,7 +295,7 @@ def _parse_document(document: object) -> PayloadReport:
             skipped["unrecognized_shape"] += 1
 
     return PayloadReport(
-        data_type=_classify_data_type(len(metrics), len(workouts)),
+        data_type=_classify_data_type(len(metrics), len(workouts), data),
         metrics=len(metrics),
         samples=samples,
         workouts=len(workouts),

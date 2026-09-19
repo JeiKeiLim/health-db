@@ -607,12 +607,12 @@ class TestNotificationLanePersistence:
         assert len(pool.txn.ecgs) == 1 and len(pool.txn.hrn) == 1
         assert len(pool.txn.ecg_voltages) == 3 and len(pool.txn.hrn_samples) == 2
 
-    def test_raw_ingest_data_type_is_metrics_for_lane_only_payload(self):
-        """raw_ingest.data_type contract enum ('metrics' | 'workouts'): a
-        lane-only payload (metrics array present but empty) still classifies
-        as 'metrics' — lane presence never invents a third enum value."""
+    def test_raw_ingest_data_type_is_lane_key_for_lane_only_payload(self):
+        """A lane-only payload (no metrics, no workouts) labels raw_ingest.
+        data_type with the lane that carried it — the SAME classifier feeds
+        the /api/ingest response, so the two labels cannot diverge."""
         doc = lane_doc(ecg=[ECG_SESSION])
         pool = _FakePool()
         ingest_payload(pool, doc, sha256=_sha_of(doc), body=json.dumps(doc).encode("utf-8"))
         row = next(iter(pool.txn.raw_ingest.values()))
-        assert row["data_type"] == "metrics"
+        assert row["data_type"] == "ecg"
