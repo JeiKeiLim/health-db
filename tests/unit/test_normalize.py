@@ -26,17 +26,23 @@ from health_db.normalize import (
     BLOOD_PRESSURE_SYSTOLIC,
     CUMULATIVE_UNITS,
     ECG_SKIP,
+    HRN_KIND_HR,
+    HRN_KIND_HRV,
     KJ_PER_KCAL,
     LB_PER_KG,
+    NOTIFICATION_SKIP,
     SLEEP_IN_BED,
     SLEEP_NO_VALUE,
     ST_PER_KG,
     UNIT_UNCONVERTIBLE,
     EcgRow,
     EcgVoltageRow,
+    HrnRow,
+    HrnSampleRow,
     SampleRow,
     WorkoutRow,
     _ecg_rows,
+    _hrn_rows,
     _qty_for_unit,
     _qty_of,
     _sum_qty_of,
@@ -1021,7 +1027,7 @@ def real_workout(**overrides: object) -> dict:
         "id": "A1B2C3D4-0000-1111-2222-333344445555",
         "name": "Outdoor Run",
         "start": "2023-01-15 18:57:52 +0900",
-        "end": "2023-01-15 19:46:55 +0900",
+        "end": "2023-01-15 18:46:55 +0900",
         "duration": 2700.0,
         "activeEnergyBurned": {"qty": 2100.0, "units": "kJ"},
         "activeEnergy": [
@@ -1055,8 +1061,8 @@ def real_workout(**overrides: object) -> dict:
             {"date": "2023-01-15 18:59:00 +0900", "Avg": 132.75, "Min": 128, "Max": 134},
         ],
         "heartRateRecovery": [
-            {"date": "2023-01-15 19:46:55 +0900", "Avg": 165, "Min": 165, "Max": 165},
-            {"date": "2023-01-15 19:47:00 +0900", "Avg": 166, "Min": 166, "Max": 166},
+            {"date": "2023-01-15 18:46:55 +0900", "Avg": 165, "Min": 165, "Max": 165},
+            {"date": "2023-01-15 18:47:00 +0900", "Avg": 166, "Min": 166, "Max": 166},
         ],
         "route": [
             {
@@ -1448,3 +1454,255 @@ class TestEcgVoltageBatchConstant:
         from health_db.normalize import ECG_VOLTAGE_BATCH
 
         assert ECG_VOLTAGE_BATCH == 10_000
+
+
+# ---------------------------------------------------------------------------
+# Heart-rate-notification lane (job-6, run 2026-09-17-normalizer-audit §3)
+# ---------------------------------------------------------------------------
+
+
+# Fixture mirrored verbatim from tests/acceptance/parse_everything.py
+# (scenario 6 — trimmed real backfill notification shape).
+HR_NOTIFICATION = {
+    "start": "2026-06-16T04:39:20Z",
+    "end": "2026-06-16T04:39:20Z",
+    "threshold": 118,
+    "heartNotification": "high_heart_rate_notification",
+    "source": {"name": "Jongkuk의 Apple Watch", "identifier": "com.apple.health.A1B2C3D4"},
+    "heartRateData": [
+        {
+            "hrUnits": "count/min",
+            "heartRate": 132,
+            "timestamp": {
+                "measurementDuration": 0,
+                "end": "2026-06-16T04:40:29Z",
+                "units": "s",
+                "start": "2026-06-16T04:40:29Z",
+            },
+        },
+    ],
+    "hrvData": [
+        {
+            "units": "ms",
+            "hrv": 27.413754219876544,
+            "timestamp": {
+                "measurementDuration": 59.5,
+                "end": "2026-06-16T04:31:05Z",
+                "units": "s",
+                "start": "2026-06-16T04:30:05Z",
+            },
+        },
+    ],
+}
+
+
+def hrn_doc(events: list | None = None) -> dict:
+    data: dict = {}
+    if events is not None:
+        data["heartRateNotifications"] = events
+    return {"data": data}
+
+
+class TestHrnRows:
+    def test_event_fixture_fields(self):
+        events, samples, skips = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        assert skips == {}
+        assert len(events) == 1
+        row = events[0]
+        assert isinstance(row, HrnRow)
+        assert row.ref == 0
+        assert row.source_name == "Jongkuk의 Apple Watch"
+        # ISO-8601 Z strings via _parse_ts (never the HAE %z space format).
+        assert row.start_ts == datetime(2026, 6, 16, 4, 39, 20, tzinfo=UTC)
+        assert row.end_ts == datetime(2026, 6, 16, 4, 39, 20, tzinfo=UTC)
+        assert row.kind == "high_heart_rate_notification"
+        assert row.threshold == 118
+
+    def test_samples_hr_and_hrv_with_pinned_keys(self):
+        # Value/unit keys are pinned from the real corpus: HR reads
+        # heartRate/hrUnits, HRV reads hrv/units; ts = timestamp.start.
+        events, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        assert len(samples) == 2
+        hr = samples[0]
+        assert isinstance(hr, HrnSampleRow)
+        assert hr.hrn_ref == 0
+        assert hr.kind == HRN_KIND_HR
+        assert hr.value == 132.0
+        assert hr.units == "count/min"
+        assert hr.ts == datetime(2026, 6, 16, 4, 40, 29, tzinfo=UTC)
+        hrv = samples[1]
+        assert hrv.kind == HRN_KIND_HRV
+        assert hrv.value == pytest.approx(27.413754219876544)
+        assert hrv.units == "ms"
+        assert hrv.ts == datetime(2026, 6, 16, 4, 30, 5, tzinfo=UTC)
+
+    def test_kind_values_are_hr_and_hrv(self):
+        _, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        assert {s.kind for s in samples} == {"hr", "hrv"}
+
+    def test_ref_links_events_to_their_samples(self):
+        # Two events: each sample's hrn_ref must track its event's index
+        # (pipeline resolves ref → DB id; job-7).
+        second = {
+            **HR_NOTIFICATION,
+            "start": "2026-06-17T04:39:20Z",
+            "end": "2026-06-17T04:39:20Z",
+        }
+        events, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION, second]))
+        assert [e.ref for e in events] == [0, 1]
+        assert {s.hrn_ref for s in samples} == {0, 1}
+        assert len([s for s in samples if s.hrn_ref == 0]) == 2
+        assert len([s for s in samples if s.hrn_ref == 1]) == 2
+
+    def test_event_without_samples_still_stored(self):
+        # Unlike ECG (empty voltages → session skipped), an event with no
+        # sample lists still carries its own data (kind/threshold/window) —
+        # heartRateData/hrvData are optional (spec §3 shape).
+        minimal = {
+            "start": "2026-06-16T04:39:20Z",
+            "end": "2026-06-16T04:39:20Z",
+            "heartNotification": "high_heart_rate_notification",
+            "source": {"name": "Watch"},
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([minimal]))
+        assert len(events) == 1 and samples == []
+        assert skips == {}
+
+    def test_unparseable_start_event_skipped_and_counted(self):
+        bad = {**HR_NOTIFICATION, "start": "bogus"}
+        events, samples, skips = _hrn_rows(hrn_doc([bad, HR_NOTIFICATION]))
+        assert len(events) == 1 and events[0].ref == 1
+        assert len(samples) == 2 and all(s.hrn_ref == 1 for s in samples)
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_missing_start_event_skipped(self):
+        bad = {k: v for k, v in HR_NOTIFICATION.items() if k != "start"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_unparseable_end_event_skipped(self):
+        # end_ts is NOT NULL (spec §6): an unparseable end cannot store.
+        bad = {**HR_NOTIFICATION, "end": "bogus"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_missing_kind_event_skipped(self):
+        # kind is NOT NULL (spec §6): a missing heartNotification cannot store.
+        bad = {k: v for k, v in HR_NOTIFICATION.items() if k != "heartNotification"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_non_string_kind_event_skipped(self):
+        bad = {**HR_NOTIFICATION, "heartNotification": 42}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_missing_source_name_event_skipped(self):
+        # source.name is the natural key's first half — a non-string cannot
+        # upsert latest-wins (real corpus shape: {name, identifier} dict).
+        bad = {**HR_NOTIFICATION, "source": {"identifier": "com.apple.health"}}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_non_dict_source_event_skipped(self):
+        bad = {**HR_NOTIFICATION, "source": "Jongkuk의 Apple Watch"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_malformed_sample_dropped_individually(self):
+        # A partially-corrupt event keeps its good samples; bad points are
+        # counted, never silent (zero-silent-drops contract).
+        bad_hr_data = [
+            {
+                "hrUnits": "count/min",
+                "heartRate": 132,
+                "timestamp": {"start": "2026-06-16T04:40:29Z"},
+            },
+            {
+                "hrUnits": "count/min",
+                "heartRate": None,
+                "timestamp": {"start": "2026-06-16T04:51:29Z"},
+            },
+            {"hrUnits": "count/min", "timestamp": {"start": "2026-06-16T04:52:29Z"}},
+            {"hrUnits": "count/min", "heartRate": 130, "timestamp": {"start": "not-a-date"}},
+            {"hrUnits": "count/min", "heartRate": 131},
+            "not-a-dict",
+        ]
+        bad = {**HR_NOTIFICATION, "heartRateData": bad_hr_data}
+        events, samples, skips = _hrn_rows(hrn_doc([bad]))
+        assert len(events) == 1, "event itself is still usable"
+        hr_samples = [s for s in samples if s.kind == HRN_KIND_HR]
+        assert len(hr_samples) == 1 and hr_samples[0].value == 132.0
+        assert skips == {NOTIFICATION_SKIP: 5}
+
+    def test_missing_timestamp_object_dropped_and_counted(self):
+        bad = {
+            **HR_NOTIFICATION,
+            "heartRateData": [{"hrUnits": "count/min", "heartRate": 132}],
+            "hrvData": [],
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([bad]))
+        assert len(events) == 1
+        assert samples == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_timestamp_end_used_only_via_start(self):
+        # The sample ts comes from timestamp.start — NOT timestamp.end
+        # (corpus shape: HRV start 04:30:05 ≠ end 04:31:05).
+        _, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        hrv = next(s for s in samples if s.kind == HRN_KIND_HRV)
+        assert hrv.ts == datetime(2026, 6, 16, 4, 30, 5, tzinfo=UTC)
+
+    def test_units_missing_defaults_to_none(self):
+        # units column is nullable (spec §6): a missing unit string → None,
+        # not a crash and not a skip.
+        event = {
+            **HR_NOTIFICATION,
+            "heartRateData": [
+                {"heartRate": 132, "timestamp": {"start": "2026-06-16T04:40:29Z"}}
+            ],
+            "hrvData": [],
+        }
+        _, samples, skips = _hrn_rows(hrn_doc([event]))
+        assert len(samples) == 1
+        assert samples[0].units is None
+        assert skips == {}
+
+    def test_threshold_missing_defaults_to_none(self):
+        # threshold is nullable (spec §6).
+        event = {k: v for k, v in HR_NOTIFICATION.items() if k != "threshold"}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events[0].threshold is None
+        assert skips == {}
+
+    def test_non_dict_event_skipped(self):
+        events, _, skips = _hrn_rows(hrn_doc(["nope", 42, HR_NOTIFICATION]))
+        assert [e.ref for e in events] == [2]
+        assert skips == {NOTIFICATION_SKIP: 2}
+
+    def test_absent_or_non_list_lane_yields_nothing_no_skips(self):
+        # An absent lane is not a drop; a malformed lane value likewise
+        # yields nothing (defensive parity with _ecg_rows/metric_rows).
+        assert _hrn_rows(hrn_doc(None)) == ([], [], {})
+        assert _hrn_rows(hrn_doc([])) == ([], [], {})
+        assert _hrn_rows({}) == ([], [], {})
+        assert _hrn_rows({"data": {"heartRateNotifications": "nope"}}) == ([], [], {})
+        assert _hrn_rows(None) == ([], [], {})
+
+    def test_lane_absent_from_metrics_payload_no_skips(self):
+        # A normal metrics payload carries no heartRateNotifications key.
+        document = doc([metric("step_count", [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}])])
+        assert _hrn_rows(document) == ([], [], {})
+
+    def test_frozen_dataclasses(self):
+        events, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        with pytest.raises(Exception):
+            events[0].threshold = 9  # type: ignore[misc]
+        with pytest.raises(Exception):
+            samples[0].value = 0.0  # type: ignore[misc]

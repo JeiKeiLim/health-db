@@ -70,6 +70,17 @@ CF-absolute would yield year-2056 values, and the predecessor CF epoch
 applies only to the retired .hae lane, never REST ECG). Dropped sessions and
 dropped voltage samples are COUNTED (``ecg`` skip-reason, spec §5), never
 silent.
+
+Notification lane (run 2026-09-17-normalizer-audit §3):
+``data.heartRateNotifications`` → ``heart_rate_notifications`` +
+``heart_rate_notification_samples`` (:func:`_hrn_rows`; session rows like
+workouts — OUT of ``raw_samples``/``daily_rollups``). Event start/end are
+ISO-8601 Z strings (:func:`_parse_ts`); each sample's timestamp is its
+``timestamp.start``. Value/unit keys are pinned from the real backfill
+corpus: HR reads ``heartRate``/``hrUnits``, HRV reads ``hrv``/``units``;
+sample ``kind`` is ``'hr'`` vs ``'hrv'`` (a single ts may carry both, so
+kind joins the samples PK, spec §6). Dropped events and dropped samples
+are COUNTED (``notification`` skip-reason, spec §5), never silent.
 """
 
 from __future__ import annotations
@@ -374,11 +385,61 @@ class EcgVoltageRow:
     units: str
 
 
+@dataclass(frozen=True, slots=True)
+class HrnRow:
+    """One ``heart_rate_notifications`` row (upsert key = (source_name,
+    start_ts), UNIQUE).
+
+    ``ref`` is the event's index within ``data.heartRateNotifications``
+    (the stable array-position reference linking this row to its sample
+    rows) — job-7's pipeline resolves it to the DB ``id`` after the event
+    upsert. ``kind`` is the raw ``heartNotification`` string (real corpus:
+    ``high_heart_rate_notification``); ``threshold`` is the nullable bpm
+    trigger (spec §6: nullable column).
+    """
+
+    ref: int
+    source_name: str
+    start_ts: datetime
+    end_ts: datetime
+    kind: str
+    threshold: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HrnSampleRow:
+    """One ``heart_rate_notification_samples`` row (PK (notification_id, ts,
+    kind); ``notification_id`` = parent ``ref``).
+
+    ``kind`` is ``'hr'`` or ``'hrv'`` — a single ts may carry both kinds
+    (spec §6), so kind joins the PK. Value/unit keys are pinned from the
+    real corpus: HR ``heartRate``/``hrUnits``, HRV ``hrv``/``units``; ``ts``
+    is the sample's ``timestamp.start``.
+    """
+
+    hrn_ref: int
+    ts: datetime
+    kind: str
+    value: float
+    units: str | None = None
+
+
 # Skip-reason key (run spec §5): an ECG session dropped for an unparseable
 # start (cannot upsert latest-wins without (source, start)) or an empty
 # voltageMeasurements array (a session without samples carries no data).
 # Counted by job-4's `skipped.ecg` ingest-response accounting — never silent.
 ECG_SKIP = "ecg"
+
+# Skip-reason key (run spec §5): a notification dropped for an unparseable
+# start (the (source_name, start_ts) natural key needs it — cannot upsert
+# latest-wins). Counted by job-4's `skipped.notification` ingest-response
+# accounting — never silent.
+NOTIFICATION_SKIP = "notification"
+
+# Sample kinds (spec §3): HR and HRV sample lists hang off each event; a
+# single ts may carry both, so kind joins the samples PK (spec §6).
+HRN_KIND_HR = "hr"
+HRN_KIND_HRV = "hrv"
 
 
 def _num(value: object) -> float | None:
@@ -1046,3 +1107,159 @@ def _ecg_rows(document: object) -> tuple[list[EcgRow], list[EcgVoltageRow], dict
 # statement — the 42-session backfill carries 600,000 voltages; the
 # pipeline (job-7) chunks with this limit).
 ECG_VOLTAGE_BATCH = 10_000
+
+
+def _hrn_sample_rows(
+    hrn_ref: int,
+    samples: object,
+    *,
+    kind: str,
+    value_key: str,
+    unit_key: str,
+) -> tuple[list[HrnSampleRow], int]:
+    """One event's sample list → (HrnSampleRows, dropped_count).
+
+    ``kind`` distinguishes the two lists ('hr' vs 'hrv'); the value/unit
+    keys are pinned per kind from the real backfill corpus: HR reads
+    ``heartRate``/``hrUnits``, HRV reads ``hrv``/``units`` (spec §3). ``ts``
+    is the sample's ``timestamp.start`` via :func:`_parse_ts`. Malformed
+    points (non-dict, missing/None value, unparseable ts) drop the
+    individual sample (counted) while good siblings are kept: a
+    partially-corrupt event must not poison its good samples.
+    """
+    rows: list[HrnSampleRow] = []
+    dropped = 0
+    if not isinstance(samples, list):
+        return [], 0
+    for point in samples:
+        if not isinstance(point, dict):
+            dropped += 1
+            continue
+        value = _num(point.get(value_key))
+        if value is None:
+            dropped += 1
+            continue
+        ts_payload = point.get("timestamp")
+        ts_start = ts_payload.get("start") if isinstance(ts_payload, dict) else None
+        ts = _parse_ts(ts_start)
+        if ts is None:
+            dropped += 1
+            continue
+        units = point.get(unit_key)
+        rows.append(
+            HrnSampleRow(
+                hrn_ref=hrn_ref,
+                ts=ts,
+                kind=kind,
+                value=value,
+                units=units if isinstance(units, str) and units else None,
+            )
+        )
+    return rows, dropped
+
+
+def _hrn_event_fields(
+    event: dict[str, object],
+) -> tuple[datetime, datetime, str, int | None] | None:
+    """Extract the scalars of one notification event, or None when skipped.
+
+    ``start``/``end`` are ISO-8601 Z strings parsed by :func:`_parse_ts`
+    (demo corpus: ``2026-06-16T04:39:20Z``). An event missing a parseable
+    start or end cannot upsert latest-wins ((source_name, start_ts) needs
+    the start; end_ts is NOT NULL per spec §6), so it is dropped and
+    counted (``skipped.notification``, spec §5). ``kind`` is the raw
+    ``heartNotification`` string — NOT NULL per spec §6, so a missing
+    non-string kind drops the event. ``threshold`` is optional (nullable
+    column).
+    """
+    start = _parse_ts(event.get("start"))
+    if start is None:
+        return None
+    end = _parse_ts(event.get("end"))
+    if end is None:
+        return None
+    kind = event.get("heartNotification")
+    if not isinstance(kind, str) or not kind:
+        return None
+    threshold = _num(event.get("threshold"))
+    return start, end, kind, int(threshold) if threshold is not None else None
+
+
+def _hrn_rows(document: object) -> tuple[list[HrnRow], list[HrnSampleRow], dict[str, int]]:
+    """Normalize ``data.heartRateNotifications`` into (HrnRows, HrnSampleRows,
+    skip census).
+
+    Session lanes (like workouts): rows go to the
+    ``heart_rate_notifications``/``heart_rate_notification_samples`` tables
+    via job-7's upserts — OUT of ``raw_samples`` and ``daily_rollups``.
+    ``ref`` is the event's index in ``data.heartRateNotifications``; the
+    pipeline resolves it to the DB ``id`` after the parent upsert, so
+    sample rows never need a DB round-trip here (pure, no I/O).
+
+    Skips (counted under ``notification``, spec §5): events with an
+    unparseable start/end, a missing/non-string ``heartNotification`` kind,
+    and malformed individual samples (missing/None value, unparseable
+    timestamp). ``source`` is the ``{name, identifier}`` object — ``name``
+    feeds the natural key; a missing/non-string name is skipped like any
+    other unusable natural-key half. Empty/non-list lane yields nothing
+    with no skips — an absent lane is not a drop. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
+    if not isinstance(document, dict):
+        return [], [], skips
+    data = document.get("data")
+    if not isinstance(data, dict):
+        return [], [], skips
+    events = data.get("heartRateNotifications")
+    if not isinstance(events, list):
+        return [], [], skips
+
+    event_rows: list[HrnRow] = []
+    sample_rows: list[HrnSampleRow] = []
+    dropped_total = 0
+    for ref, event in enumerate(events):
+        if not isinstance(event, dict):
+            dropped_total += 1
+            continue
+        source_payload = event.get("source")
+        source_name = source_payload.get("name") if isinstance(source_payload, dict) else None
+        if not isinstance(source_name, str) or not source_name:
+            dropped_total += 1
+            continue
+        fields = _hrn_event_fields(event)
+        if fields is None:
+            dropped_total += 1
+            continue
+        start, end, kind, threshold = fields
+        event_rows.append(
+            HrnRow(
+                ref=ref,
+                source_name=source_name,
+                start_ts=start,
+                end_ts=end,
+                kind=kind,
+                threshold=threshold,
+            )
+        )
+        hr_parsed, hr_dropped = _hrn_sample_rows(
+            ref,
+            event.get("heartRateData"),
+            kind=HRN_KIND_HR,
+            value_key="heartRate",
+            unit_key="hrUnits",
+        )
+        hrv_parsed, hrv_dropped = _hrn_sample_rows(
+            ref,
+            event.get("hrvData"),
+            kind=HRN_KIND_HRV,
+            value_key="hrv",
+            unit_key="units",
+        )
+        dropped_total += hr_dropped + hrv_dropped
+        sample_rows.extend(hr_parsed)
+        sample_rows.extend(hrv_parsed)
+    if dropped_total:
+        # Sparse census parity with metric_rows_detailed/_ecg_rows: zero
+        # drops → empty dict; job-4's merge_skipped treats absent keys as 0.
+        skips[NOTIFICATION_SKIP] = dropped_total
+    return event_rows, sample_rows, skips
