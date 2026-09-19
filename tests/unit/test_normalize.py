@@ -1681,6 +1681,80 @@ class TestHrnRows:
         assert events[0].threshold is None
         assert skips == {}
 
+    def test_threshold_int32_min_is_kept(self):
+        # Signed INT32 bound: -2147483648 fits the INTEGER column (spec §6),
+        # so it must be kept — the old abs() comparison wrongly dropped it.
+        event = {**HR_NOTIFICATION, "threshold": -2147483648}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events[0].threshold == -2147483648
+        assert skips == {}
+
+    def test_threshold_nan_dropped_and_counted(self):
+        # int(float('nan')) raises ValueError — the event must drop+count,
+        # never crash the payload (zero-silent-drops discipline).
+        event = {**HR_NOTIFICATION, "threshold": float("nan")}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events == []
+        assert skips.get("notification") == 1
+
+    def test_threshold_huge_int_overflow_dropped_and_counted(self):
+        # 10**400 parses natively as a Python int (bypassing the JSON parse
+        # guards) and overflows float() — drop+count under the pinned §5 key.
+        event = {**HR_NOTIFICATION, "threshold": 10**400}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events == []
+        assert skips.get("notification") == 1
+
+    def test_threshold_309_digit_int_dropped_and_counted(self):
+        # Finite 1e308 converts to a 309-digit int that cannot fit the
+        # INTEGER column — drop+count, not an upsert crash in job-7.
+        event = {**HR_NOTIFICATION, "threshold": int(1e308)}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events == []
+        assert skips.get("notification") == 1
+
+    def test_overflow_event_dropped_valid_sibling_kept(self):
+        # A corrupt event must not poison its siblings: the huge-threshold
+        # event drops+counts; the valid event parses with its samples.
+        bad = {**HR_NOTIFICATION, "threshold": 10**400, "source": {"name": "bad"}}
+        good = {
+            **HR_NOTIFICATION,
+            "source": {"name": "good"},
+            "threshold": 2147483647,
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([bad, good]))
+        assert [e.source_name for e in events] == ["good"]
+        assert events[0].threshold == 2147483647
+        assert len([s for s in samples if s.kind == HRN_KIND_HR]) == 1
+        assert len([s for s in samples if s.kind == HRN_KIND_HRV]) == 1
+        assert skips.get("notification") == 1
+
+    def test_sample_huge_int_heart_rate_dropped_and_counted(self):
+        # Sample values also bypass the JSON guards; a huge int overflows
+        # _num's float() — the individual sample drops+counted, the event
+        # and its good siblings are kept (partial-corruption contract).
+        event = {
+            **HR_NOTIFICATION,
+            "heartRateData": [
+                {
+                    "hrUnits": "count/min",
+                    "heartRate": 10**400,
+                    "timestamp": {"start": "2026-06-16T04:40:29Z"},
+                },
+                {
+                    "hrUnits": "count/min",
+                    "heartRate": 132,
+                    "timestamp": {"start": "2026-06-16T04:51:29Z"},
+                },
+            ],
+            "hrvData": [],
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([event]))
+        assert len(events) == 1, "overflow poisons the sample, not the event"
+        hr_samples = [s for s in samples if s.kind == HRN_KIND_HR]
+        assert len(hr_samples) == 1 and hr_samples[0].value == 132.0
+        assert skips.get("notification") == 1
+
     def test_non_dict_event_skipped(self):
         events, _, skips = _hrn_rows(hrn_doc(["nope", 42, HR_NOTIFICATION]))
         assert [e.ref for e in events] == [2]

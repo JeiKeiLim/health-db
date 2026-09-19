@@ -441,6 +441,14 @@ NOTIFICATION_SKIP = "notification"
 HRN_KIND_HR = "hr"
 HRN_KIND_HRV = "hrv"
 
+# INTEGER column bounds (spec §6): threshold is a Postgres integer (4
+# bytes, signed range [-2147483648, 2147483647]). JSON-legal finite floats
+# like 1e308 convert to 309-digit ints that cannot fit; NaN converts
+# to int only to raise ValueError — _hrn_event_fields drops+counts those
+# events instead of letting the job-7 upsert fail the whole transaction.
+HRN_INT_FIELD_MIN = -(2**31)
+HRN_INT_FIELD_MAX = 2**31 - 1
+
 
 def _num(value: object) -> float | None:
     """Coerce a JSON scalar to float; bools/strings/None are rejected."""
@@ -1126,6 +1134,13 @@ def _hrn_sample_rows(
     points (non-dict, missing/None value, unparseable ts) drop the
     individual sample (counted) while good siblings are kept: a
     partially-corrupt event must not poison its good samples.
+
+    Value coercion is overflow-guarded: JSON ints parse natively (bypassing
+    payloads' parse_float/parse_constant guards), so a huge integer literal
+    like ``10**400`` reaches :func:`_num` and ``float()`` raises
+    OverflowError — the point drops + counts under ``notification``
+    (mirroring :func:`_ecg_voltage_rows`' epoch guard) instead of crashing
+    the payload (zero-silent-drops, never-crash discipline).
     """
     rows: list[HrnSampleRow] = []
     dropped = 0
@@ -1135,7 +1150,11 @@ def _hrn_sample_rows(
         if not isinstance(point, dict):
             dropped += 1
             continue
-        value = _num(point.get(value_key))
+        try:
+            value = _num(point.get(value_key))
+        except OverflowError:
+            dropped += 1
+            continue
         if value is None:
             dropped += 1
             continue
@@ -1170,7 +1189,14 @@ def _hrn_event_fields(
     counted (``skipped.notification``, spec §5). ``kind`` is the raw
     ``heartNotification`` string — NOT NULL per spec §6, so a missing
     non-string kind drops the event. ``threshold`` is optional (nullable
-    column).
+    column) and magnitude-guarded: ints bypass the JSON parse guards, so
+    a huge literal (``10**400``) overflows ``float()``, a finite ``1e308``
+    widens to a 309-digit int that cannot fit the INTEGER threshold column
+    (spec §6), and a NaN literal raises ``ValueError`` on ``int(nan)`` —
+    either way the event drops + counts under ``notification`` (mirroring
+    :func:`_ecg_voltage_rows`' epoch guard), keeping the job-7 transaction
+    crash-free. The bound check is the SIGNED INT32 range, so a valid
+    INT32_MIN threshold (-2147483648) is kept, not dropped.
     """
     start = _parse_ts(event.get("start"))
     if start is None:
@@ -1181,8 +1207,20 @@ def _hrn_event_fields(
     kind = event.get("heartNotification")
     if not isinstance(kind, str) or not kind:
         return None
-    threshold = _num(event.get("threshold"))
-    return start, end, kind, int(threshold) if threshold is not None else None
+    # JSON-legal but unrepresentable magnitudes (huge int → OverflowError,
+    # finite 1e308 → 309-digit int, NaN → ValueError on int(nan)) must
+    # drop the event, not crash the payload or the later upsert
+    # (zero-silent-drop: counted).
+    try:
+        threshold = _num(event.get("threshold"))
+        threshold_int = int(threshold) if threshold is not None else None
+    except (OverflowError, ValueError):
+        return None
+    if threshold_int is not None and not (
+        HRN_INT_FIELD_MIN <= threshold_int <= HRN_INT_FIELD_MAX
+    ):
+        return None
+    return start, end, kind, threshold_int
 
 
 def _hrn_rows(document: object) -> tuple[list[HrnRow], list[HrnSampleRow], dict[str, int]]:
