@@ -798,13 +798,13 @@ def list_heart_notifications(
         rows = _dict_rows(
             conn,
             f"""
-            SELECT h.id::text AS id, h.source_name, h.start_ts, h.end_ts,
-                   h.day_kst, h.kind, h.threshold,
+            SELECT n.id::text AS id, n.source_name, n.start_ts, n.end_ts,
+                   n.day_kst, n.kind, n.threshold,
                    (SELECT count(*) FROM heart_rate_notification_samples s
-                     WHERE s.notification_id = h.id) AS sample_count
-            FROM heart_rate_notifications h
+                     WHERE s.notification_id = n.id) AS sample_count
+            FROM heart_rate_notifications n
             {where}
-            ORDER BY h.start_ts DESC
+            ORDER BY n.start_ts DESC
             LIMIT %s
             """,
             [*params, limit],
