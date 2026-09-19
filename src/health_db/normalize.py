@@ -948,11 +948,18 @@ def _ecg_voltage_rows(
             dropped += 1
             continue
         units = point.get("units")
+        # JSON-legal but unrepresentable epochs (NaN/inf/1e300/huge) must
+        # drop the point, not crash the payload (zero-silent-drop: counted).
+        try:
+            ts = datetime.fromtimestamp(date_value, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            dropped += 1
+            continue
         rows.append(
             EcgVoltageRow(
                 ecg_ref=ecg_ref,
                 seq=seq,
-                ts=datetime.fromtimestamp(date_value, tz=UTC),
+                ts=ts,
                 voltage=voltage,
                 units=units if isinstance(units, str) and units else "mcV",
             )

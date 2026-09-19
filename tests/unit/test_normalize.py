@@ -1231,6 +1231,10 @@ def ecg_doc(sessions: list | None = None) -> dict:
     return {"data": data}
 
 
+def good_ts() -> datetime:
+    return datetime(2025, 10, 12, 1, 45, 6, 862702, tzinfo=UTC)
+
+
 class TestEcgRows:
     def test_session_fixture_fields(self):
         sessions, voltages, skips = _ecg_rows(ecg_doc([ECG_SESSION]))
@@ -1341,6 +1345,55 @@ class TestEcgRows:
         assert len(sessions) == 1, "session itself is still usable"
         assert len(voltages) == 1 and voltages[0].seq == 0
         assert skips == {ECG_SKIP: 4}
+
+    def test_voltage_epoch_out_of_range_dropped_and_counted(self):
+        # JSON-legal but unrepresentable epoch (1e300): the point is dropped
+        # and counted under 'ecg' — the session and its good sibling survive
+        # (never-crash discipline: OverflowError/OSError must not poison the
+        # full-history backfill payload).
+        good = {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}
+        bad_point = {"voltage": -2.0, "date": 1e300, "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [good, bad_point]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].ts == good_ts()
+        assert skips == {ECG_SKIP: 1}
+
+    def test_voltage_epoch_nan_dropped_and_counted(self):
+        # float('nan') passes the numeric-type gate but cannot be converted.
+        bad_point = {"voltage": -1.0, "date": float("nan"), "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [bad_point]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == [] and voltages == []
+        # 1 dropped point + 1 session (empty-after-drops, matching the
+        # empty_voltage_measurements skip semantics).
+        assert skips == {ECG_SKIP: 2}
+
+    def test_voltage_epoch_negative_huge_dropped_and_counted(self):
+        # -1e300 is finite but far below any representable epoch.
+        bad_point = {"voltage": -1.0, "date": -1e300, "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [bad_point]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == [] and voltages == []
+        assert skips == {ECG_SKIP: 2}
+
+    def test_valid_voltage_survives_alongside_out_of_range_point(self):
+        # A corrupt point must not poison its good siblings in the SAME
+        # session (partial-corruption discipline, mirrored from the
+        # malformed-point test above).
+        good = {"voltage": 3.5, "date": 1760233506.862702, "units": "mcV"}
+        mixed = [
+            {"voltage": -2.0, "date": float("inf"), "units": "mcV"},
+            good,
+            {"voltage": -2.0, "date": float("-inf"), "units": "mcV"},
+        ]
+        bad = {**ECG_SESSION, "voltageMeasurements": mixed}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1
+        assert len(voltages) == 1 and voltages[0].seq == 1
+        assert voltages[0].voltage == pytest.approx(3.5)
+        assert voltages[0].ts == good_ts()
+        assert skips == {ECG_SKIP: 2}
 
     def test_optional_session_scalars_default_to_none(self):
         # spec §6: classification / sampling_frequency / average_heart_rate
