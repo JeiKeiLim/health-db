@@ -1,8 +1,10 @@
 """MCP streamable-HTTP server for health-db (job slice-2-mcp-server).
 
-Exposes the shared query layer (:mod:`health_db.queries`) as 8 MCP tools +
-3 resources over **streamable-http** at ``/mcp`` (spec §MCP query surface),
-guarded by a Bearer-token ASGI middleware (constant-time compare against
+Exposes the shared query layer (:mod:`health_db.queries`) as MCP tools +
+3 resources over **streamable-http** at ``/mcp`` (spec §MCP query surface;
+run 2026-09-17-normalizer-audit §7 adds ``list_ecgs`` / ``get_ecg_detail``
+/ ``list_heart_notifications`` to the original 8), guarded by a
+Bearer-token ASGI middleware (constant-time compare against
 ``config.INGEST_SECRET`` — the same shared secret the ingest endpoint uses,
 spec §Auth Flow step 3).
 
@@ -177,7 +179,7 @@ class BearerAuthMiddleware:
 
 
 def build_mcp_server(pool: object | None = None):
-    """Build the ``MCPServer`` with 8 tools + 3 resources registered.
+    """Build the ``MCPServer`` with 11 tools + 3 resources registered.
 
     ``pool`` is injected into every tool (the pytest ``mcp`` fixture pins a
     disposable container pool; production passes ``None`` and
@@ -218,6 +220,7 @@ def build_mcp_server(pool: object | None = None):
             except (
                 queries.UnknownMetric,
                 queries.UnknownWorkout,
+                queries.UnknownEcg,
                 queries.InvalidParameter,
                 ValueError,
             ) as exc:
@@ -358,6 +361,74 @@ def build_mcp_server(pool: object | None = None):
             metric=metric, start=frm, end=to, limit=limit, offset=offset, pool=pool
         )
 
+    @server.tool(
+        name="list_ecgs",
+        description=(
+            "ECG sessions in an inclusive KST-day range (newest first; "
+            "classification, avg HR, voltage count included)."
+        ),
+        structured_output=True,
+    )
+    def tool_list_ecgs(
+        frm: Annotated[
+            str,
+            Field(
+                validation_alias="from",
+                serialization_alias="from",
+                description="start day YYYY-MM-DD",
+            ),
+        ] = "",
+        to: Annotated[str, Field(description="end day YYYY-MM-DD")] = "",
+        limit: Annotated[
+            int, Field(description="page size (default 50, max 500)")
+        ] = queries.ECG_HRN_DEFAULT_LIMIT,
+    ) -> dict[str, object]:
+        return queries.list_ecgs(frm, to, limit=limit, pool=pool)
+
+    @server.tool(
+        name="get_ecg_detail",
+        description=(
+            "One ECG session with a page of its voltage samples "
+            "(voltage_limit default 1000 max 10000; next_voltage_offset "
+            "None = last page)."
+        ),
+        structured_output=True,
+    )
+    def tool_get_ecg_detail(
+        id: Annotated[str, Field(description="ECG session id (see list_ecgs)")],
+        voltage_offset: Annotated[int, Field(description="0-based voltage page offset")] = 0,
+        voltage_limit: Annotated[
+            int, Field(description="voltage page size (default 1000, max 10000)")
+        ] = queries.VOLTAGE_DEFAULT_LIMIT,
+    ) -> dict[str, object]:
+        return queries.get_ecg_detail(
+            id, voltage_offset=voltage_offset, voltage_limit=voltage_limit, pool=pool
+        )
+
+    @server.tool(
+        name="list_heart_notifications",
+        description=(
+            "High-heart-rate notification events in an inclusive KST-day "
+            "range (newest first; nested HR/HRV samples included)."
+        ),
+        structured_output=True,
+    )
+    def tool_list_heart_notifications(
+        frm: Annotated[
+            str,
+            Field(
+                validation_alias="from",
+                serialization_alias="from",
+                description="start day YYYY-MM-DD",
+            ),
+        ] = "",
+        to: Annotated[str, Field(description="end day YYYY-MM-DD")] = "",
+        limit: Annotated[
+            int, Field(description="page size (default 50, max 500)")
+        ] = queries.ECG_HRN_DEFAULT_LIMIT,
+    ) -> dict[str, object]:
+        return queries.list_heart_notifications(frm, to, limit=limit, pool=pool)
+
     # Wire the guarded bodies: replace the raw registrations with guarded
     # closures so UnknownMetric / UnknownWorkout / ValueError from the query
     # layer surface as client-visible ToolErrors (never masked). The raw
@@ -372,6 +443,9 @@ def build_mcp_server(pool: object | None = None):
         "get_trends",
         "freshness_check",
         "raw_samples",
+        "list_ecgs",
+        "get_ecg_detail",
+        "list_heart_notifications",
     ):
         server.remove_tool(name)
     server.add_tool(guarded(tool_query_day), name="query_day")
@@ -382,6 +456,9 @@ def build_mcp_server(pool: object | None = None):
     server.add_tool(guarded(tool_get_trends), name="get_trends")
     server.add_tool(guarded(tool_freshness_check), name="freshness_check")
     server.add_tool(guarded(tool_raw_samples), name="raw_samples")
+    server.add_tool(guarded(tool_list_ecgs), name="list_ecgs")
+    server.add_tool(guarded(tool_get_ecg_detail), name="get_ecg_detail")
+    server.add_tool(guarded(tool_list_heart_notifications), name="list_heart_notifications")
 
     @server.resource(
         queries.RESOURCE_METRICS_URI,

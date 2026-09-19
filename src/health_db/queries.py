@@ -46,6 +46,13 @@ if TYPE_CHECKING:
 RAW_DEFAULT_LIMIT = 1000
 RAW_MAX_LIMIT = 10000
 
+# ECG/notification listing bounds (run 2026-09-17-normalizer-audit §7: list
+# defaults 50/max 500; voltage pages default 1000/max 10000 like raw_samples).
+ECG_HRN_DEFAULT_LIMIT = 50
+ECG_HRN_MAX_LIMIT = 500
+VOLTAGE_DEFAULT_LIMIT = 1000
+VOLTAGE_MAX_LIMIT = 10000
+
 # A metric is stale when its last day is older than the consensus day by
 # more than this many days (spec scenario 4: "median-based staleness").
 STALENESS_TOLERANCE_DAYS = 1
@@ -600,6 +607,267 @@ class UnknownWorkout(Exception):
 def _ts_iso(value: object) -> str | None:
     """Timestamp → ISO 8601 string (JSON-ready); None passes through."""
     return value.isoformat() if value is not None else None  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# ECG sessions + heart-rate notifications (run 2026-09-17-normalizer-audit §7)
+# ---------------------------------------------------------------------------
+
+
+def _bounded_limit(limit: int, default: int, maximum: int, label: str) -> int:
+    """Clamp a list/page ``limit`` into ``[1, maximum]`` (raw_samples contract).
+
+    Non-int types raise :class:`InvalidParameter` (actionable, never a
+    stack trace); out-of-range ints clamp the way ``raw_samples`` does.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise InvalidParameter(f"{label} must be an integer")
+    if limit < 1:
+        return 1
+    if limit > maximum:
+        return maximum
+    return limit
+
+
+def _day_range_where(alias: str, frm: str, to: str, params: list[object]) -> str:
+    """Optional [from, to] KST-day filter fragment (list_workouts contract)."""
+    where = "WHERE TRUE"
+    if frm:
+        where += f" AND {alias}.day_kst >= %s"
+        params.append(_validated_day(frm))
+    if to:
+        where += f" AND {alias}.day_kst <= %s"
+        params.append(_validated_day(to))
+    return where
+
+
+def list_ecgs(
+    frm: str = "",
+    to: str = "",
+    limit: int = ECG_HRN_DEFAULT_LIMIT,
+    pool: ConnectionPool | None = None,
+) -> dict[str, object]:
+    """ECG sessions in [from, to] KST days (inclusive), newest first.
+
+    ``limit`` clamps to ``[1, 500]`` (spec §7: default 50, max 500); each
+    row carries the child voltage count instead of the voltage payload.
+    """
+    limit = _bounded_limit(limit, ECG_HRN_DEFAULT_LIMIT, ECG_HRN_MAX_LIMIT, "limit")
+    params: list[object] = []
+    where = _day_range_where("e", frm, to, params)
+    with _resolve_pool(pool).connection() as conn:
+        rows = _dict_rows(
+            conn,
+            f"""
+            SELECT e.id::text AS id, e.source_name, e.start_ts, e.end_ts,
+                   e.day_kst, e.classification, e.sampling_frequency,
+                   e.average_heart_rate, e.voltage_count
+            FROM ecgs e
+            {where}
+            ORDER BY e.start_ts DESC
+            LIMIT %s
+            """,
+            [*params, limit],
+        )
+    ecgs = [
+        {
+            "id": row["id"],
+            "source": row["source_name"],
+            "start": _ts_iso(row["start_ts"]),
+            "end": _ts_iso(row["end_ts"]),
+            "day": _day(row["day_kst"]),
+            "classification": row["classification"],
+            "sampling_frequency": row["sampling_frequency"],
+            "average_heart_rate": row["average_heart_rate"],
+            "voltage_count": row["voltage_count"],
+        }
+        for row in rows
+    ]
+    return {"ecgs": ecgs, "count": len(ecgs)}
+
+
+def get_ecg_detail(
+    ecg_id: str,
+    voltage_offset: int = 0,
+    voltage_limit: int = VOLTAGE_DEFAULT_LIMIT,
+    pool: ConnectionPool | None = None,
+) -> dict[str, object]:
+    """One ECG session + a page of its voltage samples (array/seq order).
+
+    ``voltage_limit`` clamps to ``[1, 10000]`` (default 1000 — spec §7);
+    ``next_voltage_offset`` is ``None`` on the last page. Unknown ids raise
+    :class:`UnknownEcg` (actionable: points at ``list_ecgs``).
+    """
+    ecg_id_num = _validated_lane_id(ecg_id, "ECG", UnknownEcg)
+    voltage_offset = _validated_offset(voltage_offset, "voltage_offset")
+    voltage_limit = _bounded_limit(
+        voltage_limit, VOLTAGE_DEFAULT_LIMIT, VOLTAGE_MAX_LIMIT, "voltage_limit"
+    )
+    with _resolve_pool(pool).connection() as conn:
+        head_rows = _dict_rows(
+            conn,
+            """
+            SELECT id::text AS id, source_name, start_ts, end_ts, day_kst,
+                   classification, sampling_frequency, average_heart_rate,
+                   voltage_count
+            FROM ecgs WHERE id = %s
+            """,
+            (ecg_id_num,),
+        )
+        if not head_rows:
+            raise UnknownEcg(str(ecg_id))
+        head = head_rows[0]
+        voltage_rows = _dict_rows(
+            conn,
+            """
+            SELECT ts, voltage, units
+            FROM ecg_voltages
+            WHERE ecg_id = %s
+            ORDER BY seq
+            LIMIT %s OFFSET %s
+            """,
+            (ecg_id_num, voltage_limit + 1, voltage_offset),
+        )
+    has_more = len(voltage_rows) > voltage_limit
+    voltage_rows = voltage_rows[:voltage_limit]
+    return {
+        "id": head["id"],
+        "source": head["source_name"],
+        "start": _ts_iso(head["start_ts"]),
+        "end": _ts_iso(head["end_ts"]),
+        "day": _day(head["day_kst"]),
+        "classification": head["classification"],
+        "sampling_frequency": head["sampling_frequency"],
+        "average_heart_rate": head["average_heart_rate"],
+        "voltage_count": head["voltage_count"],
+        "voltage_offset": voltage_offset,
+        "voltage_limit": voltage_limit,
+        "next_voltage_offset": (
+            voltage_offset + voltage_limit if has_more else None
+        ),
+        "voltages": [
+            {
+                "ts": _ts_iso(row["ts"]),
+                "voltage": row["voltage"],
+                "units": row["units"],
+            }
+            for row in voltage_rows
+        ],
+    }
+
+
+class UnknownEcg(Exception):
+    """An ECG session id is not in ``ecgs``. Actionable: points at
+    ``list_ecgs`` for the available range."""
+
+    def __init__(self, ecg_id: str) -> None:
+        self.ecg_id = ecg_id
+        super().__init__(
+            f"ECG session '{ecg_id}' not found — call list_ecgs "
+            "(or narrow the from/to range) for available session ids"
+        )
+
+
+class UnknownHrn(Exception):
+    """A notification event id is not in ``heart_rate_notifications``.
+    Actionable: points at ``list_heart_notifications``."""
+
+    def __init__(self, notification_id: str) -> None:
+        self.notification_id = notification_id
+        super().__init__(
+            f"heart-rate notification '{notification_id}' not found — call "
+            "list_heart_notifications (or narrow the from/to range) for available event ids"
+        )
+
+
+def list_heart_notifications(
+    frm: str = "",
+    to: str = "",
+    limit: int = ECG_HRN_DEFAULT_LIMIT,
+    pool: ConnectionPool | None = None,
+) -> dict[str, object]:
+    """Heart-rate-notification events in [from, to] KST days, newest first.
+
+    ``limit`` clamps to ``[1, 500]`` (spec §7: default 50, max 500); each
+    event embeds its HR/HRV sample rows ordered by (ts, kind).
+    """
+    limit = _bounded_limit(limit, ECG_HRN_DEFAULT_LIMIT, ECG_HRN_MAX_LIMIT, "limit")
+    params: list[object] = []
+    where = _day_range_where("n", frm, to, params)
+    with _resolve_pool(pool).connection() as conn:
+        rows = _dict_rows(
+            conn,
+            f"""
+            SELECT h.id::text AS id, h.source_name, h.start_ts, h.end_ts,
+                   h.day_kst, h.kind, h.threshold,
+                   (SELECT count(*) FROM heart_rate_notification_samples s
+                     WHERE s.notification_id = h.id) AS sample_count
+            FROM heart_rate_notifications h
+            {where}
+            ORDER BY h.start_ts DESC
+            LIMIT %s
+            """,
+            [*params, limit],
+        )
+        ids = [int(row["id"]) for row in rows]
+        sample_rows = (
+            _dict_rows(
+                conn,
+                """
+                SELECT notification_id::text AS id, ts, kind, value, units
+                FROM heart_rate_notification_samples
+                WHERE notification_id = ANY(%s::bigint[])
+                ORDER BY ts, kind
+                """,
+                ([ids],),
+            )
+            if ids
+            else []
+        )
+    samples_by_event: dict[str, list[dict[str, object]]] = {}
+    for sample in sample_rows:
+        samples_by_event.setdefault(str(sample["id"]), []).append(
+            {
+                "ts": _ts_iso(sample["ts"]),
+                "kind": sample["kind"],
+                "value": sample["value"],
+                "units": sample["units"],
+            }
+        )
+    notifications = [
+        {
+            "id": row["id"],
+            "source": row["source_name"],
+            "start": _ts_iso(row["start_ts"]),
+            "end": _ts_iso(row["end_ts"]),
+            "day": _day(row["day_kst"]),
+            "kind": row["kind"],
+            "threshold": row["threshold"],
+            "sample_count": row["sample_count"],
+            "samples": samples_by_event.get(str(row["id"]), []),
+        }
+        for row in rows
+    ]
+    return {"notifications": notifications, "count": len(notifications)}
+
+
+def _validated_offset(offset: int, label: str) -> int:
+    """Non-negative integer page offset (InvalidParameter otherwise)."""
+    if not isinstance(offset, int) or isinstance(offset, bool):
+        raise InvalidParameter(f"{label} must be an integer")
+    return offset if offset >= 0 else 0
+
+
+def _validated_lane_id(value: str, label: str, exc_type: type[Exception]) -> int:
+    """Parse a lane-row id (integer identity) or raise the caller's error type.
+
+    ``exc_type`` is :class:`UnknownEcg` / :class:`UnknownHrn` — the same
+    actionable shape the workout path uses with :class:`UnknownWorkout`.
+    """
+    try:
+        return int(str(value))
+    except (ValueError, TypeError) as exc:
+        raise exc_type(str(value)) from exc
 
 
 # ---------------------------------------------------------------------------

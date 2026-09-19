@@ -22,6 +22,7 @@ from health_db.cli import (
     build_parser,
     emit_json,
     main,
+    run_ecg_detail,
     run_metrics,
     run_query_day,
     run_raw,
@@ -76,6 +77,23 @@ class FakeQueries:
 
     def get_workout_detail(self, workout_id, pool=None):  # noqa: ANN001
         return self._record("get_workout_detail", (workout_id,), {"pool": pool})
+
+    def list_ecgs(self, frm="", to="", limit=50, pool=None):  # noqa: ANN001
+        return self._record("list_ecgs", (frm, to), {"limit": limit, "pool": pool})
+
+    def get_ecg_detail(  # noqa: ANN001
+        self, ecg_id, voltage_offset=0, voltage_limit=1000, pool=None
+    ):
+        return self._record(
+            "get_ecg_detail",
+            (ecg_id,),
+            {"voltage_offset": voltage_offset, "voltage_limit": voltage_limit, "pool": pool},
+        )
+
+    def list_heart_notifications(self, frm="", to="", limit=50, pool=None):  # noqa: ANN001
+        return self._record(
+            "list_heart_notifications", (frm, to), {"limit": limit, "pool": pool}
+        )
 
 
 @pytest.fixture()
@@ -189,6 +207,50 @@ class TestHandlers:
         run_routes(["abc-123"], q=fq, pool=1)
         assert fq.calls == [("get_workout_detail", ("abc-123",), {"pool": 1})]
         assert parsed_out(out)["args"] == ["abc-123"]
+
+    def test_ecgs_passes_range_and_limit(self, fq, out):
+        rc = cli.run_ecgs(
+            ["--from", "2026-09-01", "--to", "2026-09-17", "--limit", "5"], q=fq, pool=1
+        )
+        assert rc == 0
+        assert fq.calls == [("list_ecgs", ("2026-09-01", "2026-09-17"), {"limit": 5, "pool": 1})]
+        assert parsed_out(out)["called"] == "list_ecgs"
+
+    def test_ecgs_defaults(self, fq, out):
+        cli.run_ecgs([], q=fq, pool=1)
+        assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 50
+
+    def test_ecg_detail_passes_id_and_paging(self, fq, out):
+        rc = cli.run_ecg_detail(
+            ["7", "--voltage-offset", "1000", "--voltage-limit", "2000"], q=fq, pool=1
+        )
+        assert rc == 0
+        assert fq.calls == [
+            (
+                "get_ecg_detail",
+                ("7",),
+                {"voltage_offset": 1000, "voltage_limit": 2000, "pool": 1},
+            )
+        ]
+        assert parsed_out(out)["args"] == ["7"]
+
+    def test_ecg_detail_defaults(self, fq, out):
+        cli.run_ecg_detail(["7"], q=fq, pool=1)
+        recorded = fq.calls[0][2]
+        assert recorded["voltage_offset"] == 0
+        assert recorded["voltage_limit"] == 1000
+
+    def test_hrn_passes_range_and_limit(self, fq, out):
+        cli.run_hrn(["--from", "2026-06-01", "--to", "2026-06-30", "--limit", "5"], q=fq, pool=1)
+        assert fq.calls == [
+            ("list_heart_notifications", ("2026-06-01", "2026-06-30"), {"limit": 5, "pool": 1})
+        ]
+
+    def test_hrn_defaults(self, fq, out):
+        cli.run_hrn([], q=fq, pool=1)
+        assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 50
 
     def test_freshness_no_options(self, fq, out):
         rc = COMMANDS["freshness"]([], q=fq, pool=1)
@@ -349,9 +411,14 @@ class TestEmitJson:
 
 
 class TestCommandSurface:
-    def test_exactly_the_seven_spec_commands(self):
+    def test_exactly_the_ten_spec_commands(self):
+        """Slice-2's 7 commands + run 2026-09-17-normalizer-audit §7's
+        ecgs / ecg-detail / hrn (thin wrappers over the new tools)."""
         assert sorted(COMMANDS) == [
+            "ecg-detail",
+            "ecgs",
             "freshness",
+            "hrn",
             "metrics",
             "query-day",
             "raw",
@@ -394,6 +461,14 @@ class TestCommandSurface:
         assert exc.value.code == 0
         text = capsys.readouterr().out
         for flag in ("--metric", "--limit", "--offset", "--from", "--to"):
+            assert flag in text
+
+    def test_ecg_detail_help_shows_paging_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            run_ecg_detail(["--help"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 0
+        text = capsys.readouterr().out
+        for flag in ("--voltage-offset", "--voltage-limit"):
             assert flag in text
 
     def test_main_dispatches_to_handler_with_remaining_argv(self, monkeypatch, out, err):

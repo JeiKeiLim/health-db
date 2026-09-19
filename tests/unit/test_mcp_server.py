@@ -141,14 +141,19 @@ def _tool_names(server) -> list[str]:
 
 
 class TestBuildMcpServer:
-    def test_registers_exactly_the_8_spec_tools(self):
+    def test_registers_exactly_the_11_spec_tools(self):
+        """The original 8 tools (unchanged schemas) + run
+        2026-09-17-normalizer-audit §7's three lane tools."""
         server = build_mcp_server(pool=_FakePool())
         names = _tool_names(server)
         assert names == [
             "freshness_check",
+            "get_ecg_detail",
             "get_metric_series",
             "get_trends",
             "get_workout_detail",
+            "list_ecgs",
+            "list_heart_notifications",
             "list_metrics",
             "list_workouts",
             "query_day",
