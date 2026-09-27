@@ -246,7 +246,7 @@ class TestValidatedOffset:
         """2**63 is past PostgreSQL's bigint OFFSET: must raise
         InvalidParameter at the guard (before any pool borrow), never
         NumericValueOutOfRange from the SQL layer."""
-        with pytest.raises(InvalidParameter, match="voltage_offset must be below"):
+        with pytest.raises(InvalidParameter, match="voltage_offset must be at most"):
             queries._validated_offset(2**63, "voltage_offset")
 
     def test_offset_boundary_2_pow_62_accepted(self):
@@ -254,11 +254,14 @@ class TestValidatedOffset:
         assert queries._validated_offset(2**62, "voltage_offset") == 2**62
 
     def test_offset_just_below_ceiling_accepted(self):
+        """2**63 - 2 is the last offset below the ceiling — passes through."""
         assert queries._validated_offset(2**63 - 2, "voltage_offset") == 2**63 - 2
 
-    def test_offset_ceiling_minus_one_accepted(self):
-        assert queries._validated_offset(queries.OFFSET_MAX_BIGINT - 1, "voltage_offset") == (
-            queries.OFFSET_MAX_BIGINT - 1
+    def test_offset_max_bigint_accepted(self):
+        """2**63 - 1 is a valid bigint: accepted (PG serves an empty page
+        for it without crashing), not defensively over-rejected."""
+        assert queries._validated_offset(queries.OFFSET_MAX_BIGINT, "voltage_offset") == (
+            queries.OFFSET_MAX_BIGINT
         )
 
 

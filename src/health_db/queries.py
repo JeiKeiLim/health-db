@@ -54,10 +54,11 @@ VOLTAGE_DEFAULT_LIMIT = 1000
 VOLTAGE_MAX_LIMIT = 10000
 
 # Page-offset ceiling: the PostgreSQL OFFSET clause is a bigint, so an
-# offset at/above 2**63 would surface as a masked NumericValueOutOfRange
+# offset above 2**63 - 1 would surface as a masked NumericValueOutOfRange
 # from the SQL layer instead of an actionable message (job-8 eval finding:
 # 2**63 through get_ecg_detail) — _validated_offset rejects it before any
-# pool borrow.
+# pool borrow. 2**63 - 1 itself is a valid bigint and is accepted (PG
+# serves an empty page for it without crashing).
 OFFSET_MAX_BIGINT = 2**63 - 1
 
 # A metric is stale when its last day is older than the consensus day by
@@ -862,13 +863,14 @@ def _validated_offset(offset: int, label: str) -> int:
     Negative values clamp to 0 (a caller asking before the first page gets
     the first page); offsets above the PostgreSQL bigint OFFSET ceiling
     (2**63 - 1) raise :class:`InvalidParameter` — they cannot page anything
-    real and would otherwise crash in the SQL layer.
+    real and would otherwise crash in the SQL layer. 2**63 - 1 itself is
+    accepted: PG serves an empty page for it without crashing.
     """
     if not isinstance(offset, int) or isinstance(offset, bool):
         raise InvalidParameter(f"{label} must be an integer")
-    if offset >= OFFSET_MAX_BIGINT:
+    if offset > OFFSET_MAX_BIGINT:
         raise InvalidParameter(
-            f"{label} must be below {OFFSET_MAX_BIGINT} "
+            f"{label} must be at most {OFFSET_MAX_BIGINT} "
             "(PostgreSQL OFFSET is a bigint)"
         )
     return offset if offset >= 0 else 0
