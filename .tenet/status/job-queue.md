@@ -1,9 +1,9 @@
 # Job Queue
 
-Updated: 2026-09-27T13:17:42.740Z
+Updated: 2026-09-27T19:46:11.189Z
 
-- [ ] Integration: parse-everything acceptance + full unit gate (e2e-1)
-- [ ] Final E2E: full gate + deployment handoff doc (e2e-2)
+- [x] Integration: parse-everything acceptance + full unit gate (e2e-1) — 11m 20s
+- [x] Final E2E: full gate + deployment handoff doc (e2e-2) — 10m 22s
 - [x] Migration 0002: ECG + notification tables (job-1) — 25m 56s
 - [x] Sleep value rule + in-bed split + loosened recognition (job-2) — 2m 50s
 - [x] Unit-conversion amendment (lb/st/degF) (job-3) — 36m 38s
@@ -12,7 +12,7 @@ Updated: 2026-09-27T13:17:42.740Z
 - [x] HR-notification lane normalizer (pure) (job-6) — 4m 15s
 - [x] Pipeline wiring: lane upserts in one transaction (job-7) — 26m 41s
 - [x] MCP tools + queries + CLI + schema resource (job-8) — 4m 54s
-- [ ] Fixtures, census lock, docs + doctrine note (job-9)
+- [x] Fixtures, census lock, docs + doctrine note (job-9) — 19m 5s
 - [x] interaction-e2e probe: job-7 lane persistence (retry rubric run) (probe-job-7) — 7m 38s
 - [x] FastAPI app + /api/ingest pipeline (slice-1-api) — 5m 42s
 - [x] Verbatim archive store (iron law) (slice-1-archive) — 7m 19s
@@ -372,3 +372,33 @@ Updated: 2026-09-27T13:17:42.740Z
 - [x] interaction_e2e for 8a72f30e — 3m 10s
 - [x] security_critic for 8a72f30e — 4m 30s
 - [x] parse_everything_critic for 8a72f30e — 6m 19s
+- [x] code_critic for f8cf6f19 — 35m 6s
+- [x] test_critic for f8cf6f19 — 5m 40s
+- [x] interaction_e2e for f8cf6f19 — 7m 14s
+- [x] security_critic for f8cf6f19 — 16m 0s
+- [x] parse_everything_critic for f8cf6f19 — 5m 54s
+- [x] code_critic for f8cf6f19 — 28m 43s
+- [x] test_critic for f8cf6f19 — 6m 24s
+- [x] interaction_e2e for f8cf6f19 — 13m 0s
+- [x] security_critic for f8cf6f19 — 2m 19s
+- [x] parse_everything_critic for f8cf6f19 — 19m 29s
+- [x] code_critic for c07bf106 — 5m 49s
+- [x] test_critic for c07bf106 — 8m 1s
+- [x] interaction_e2e for c07bf106 — 7m 1s
+- [x] security_critic for c07bf106 — 7m 16s
+- [x] parse_everything_critic for c07bf106 — 10m 34s
+- [x] code_critic for c07bf106 — 9m 10s
+- [x] test_critic for c07bf106 — 13m 56s
+- [x] interaction_e2e for c07bf106 — 6m 36s
+- [x] security_critic for c07bf106 — 9m 15s
+- [x] parse_everything_critic for c07bf106 — 4m 42s
+- [x] code_critic for e0267826 — 14m 18s
+- [x] test_critic for e0267826 — 4m 42s
+- [x] interaction_e2e for e0267826 — 4m 29s
+- [x] security_critic for e0267826 — 27m 23s
+- [x] parse_everything_critic for e0267826 — 6m 28s
+- [x] code_critic for e0267826 — 6m 33s
+- [x] test_critic for e0267826 — 7m 59s
+- [x] interaction_e2e for e0267826 — 22s
+- [x] security_critic for e0267826 — 51s
+- [x] parse_everything_critic for e0267826 — 11m 7s
