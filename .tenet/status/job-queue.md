@@ -1,7 +1,19 @@
 # Job Queue
 
-Updated: 2026-09-17T05:13:12.551Z
+Updated: 2026-09-27T13:17:42.740Z
 
+- [ ] Integration: parse-everything acceptance + full unit gate (e2e-1)
+- [ ] Final E2E: full gate + deployment handoff doc (e2e-2)
+- [x] Migration 0002: ECG + notification tables (job-1) — 25m 56s
+- [x] Sleep value rule + in-bed split + loosened recognition (job-2) — 2m 50s
+- [x] Unit-conversion amendment (lb/st/degF) (job-3) — 36m 38s
+- [x] Skip accounting: PayloadReport.skipped + ingest response (job-4) — 35m 46s
+- [x] ECG lane normalizer (pure) (job-5) — 6m 45s
+- [x] HR-notification lane normalizer (pure) (job-6) — 4m 15s
+- [x] Pipeline wiring: lane upserts in one transaction (job-7) — 26m 41s
+- [x] MCP tools + queries + CLI + schema resource (job-8) — 4m 54s
+- [ ] Fixtures, census lock, docs + doctrine note (job-9)
+- [x] interaction-e2e probe: job-7 lane persistence (retry rubric run) (probe-job-7) — 7m 38s
 - [x] FastAPI app + /api/ingest pipeline (slice-1-api) — 5m 42s
 - [x] Verbatim archive store (iron law) (slice-1-archive) — 7m 19s
 - [x] Token auth + audit (slice-1-auth) — 1m 44s
@@ -264,3 +276,99 @@ Updated: 2026-09-17T05:13:12.551Z
 - [x] eval-mu52dsgh — 3m 37s
 - [x] eval-mu52k8ag — 1m 41s
 - [x] eval-mu52n3lr — 2m 24s
+- [x] code_critic for 64f52d4c — 4m 8s
+- [x] test_critic for 64f52d4c — 20m 9s
+- [x] interaction_e2e for 64f52d4c — 74m 17s
+- [x] security_critic for 64f52d4c — 62m 46s
+- [x] parse_everything_critic for 64f52d4c — 1m 8s
+- [x] code_critic for bad96b04 — 3m 16s
+- [x] test_critic for bad96b04 — 4m 55s
+- [x] interaction_e2e for bad96b04 — 2m 39s
+- [x] security_critic for bad96b04 — 8m 31s
+- [x] parse_everything_critic for bad96b04 — 17m 19s
+- [x] code_critic for 549c133e — 11m 6s
+- [x] test_critic for 549c133e — 5m 40s
+- [x] interaction_e2e for 549c133e — 12m 25s
+- [x] security_critic for 549c133e — 1m 23s
+- [x] parse_everything_critic for 549c133e — 14m 0s
+- [x] code_critic for 0963bdbe — 74m 18s
+- [x] test_critic for 0963bdbe — 28m 49s
+- [x] interaction_e2e for 0963bdbe — 18m 1s
+- [x] security_critic for 0963bdbe — 1m 54s
+- [x] parse_everything_critic for 0963bdbe — 25m 20s
+- [!] code_critic for 0963bdbe — 14m 11s !! opencode exited with code 1
+- [ ] test_critic for 0963bdbe
+- [ ] interaction_e2e for 0963bdbe
+- [ ] security_critic for 0963bdbe
+- [ ] parse_everything_critic for 0963bdbe
+- [x] code_critic for 0963bdbe — 65m 41s
+- [x] test_critic for 0963bdbe — 22m 55s
+- [x] interaction_e2e for 0963bdbe — 3m 22s
+- [x] security_critic for 0963bdbe — 13s
+- [x] parse_everything_critic for 0963bdbe — 5m 31s
+- [x] code_critic for 0963bdbe — 16m 36s
+- [x] test_critic for 0963bdbe — 12m 33s
+- [x] interaction_e2e for 0963bdbe — 18m 36s
+- [x] security_critic for 0963bdbe — 1m 23s
+- [x] parse_everything_critic for 0963bdbe — 13m 2s
+- [x] code_critic for 5bd9678d — 29s
+- [x] test_critic for 5bd9678d — 5m 45s
+- [x] interaction_e2e for 5bd9678d — 3m 59s
+- [x] security_critic for 5bd9678d — 1m 26s
+- [x] parse_everything_critic for 5bd9678d — 15m 59s
+- [x] code_critic for 5bd9678d — 3m 16s
+- [x] test_critic for 5bd9678d — 2m 42s
+- [x] interaction_e2e for 5bd9678d — 5m 1s
+- [x] security_critic for 5bd9678d — 2m 6s
+- [x] parse_everything_critic for 5bd9678d — 2m 49s
+- [x] code_critic for 839f3968 — 7m 30s
+- [x] test_critic for 839f3968 — 1m 57s
+- [x] interaction_e2e for 839f3968 — 7m 26s
+- [x] security_critic for 839f3968 — 1m 31s
+- [x] parse_everything_critic for 839f3968 — 51s
+- [x] code_critic for 839f3968 — 6m 51s
+- [x] test_critic for 839f3968 — 1m 44s
+- [x] interaction_e2e for 839f3968 — 5m 2s
+- [x] security_critic for 839f3968 — 5m 3s
+- [x] parse_everything_critic for 839f3968 — 4m 42s
+- [x] code_critic for 839f3968 — 4m 1s
+- [x] test_critic for 839f3968 — 4m 7s
+- [x] interaction_e2e for 839f3968 — 5m 8s
+- [x] security_critic for 839f3968 — 4m 51s
+- [x] parse_everything_critic for 839f3968 — 5m 35s
+- [x] code_critic for 909384a9 — 20m 51s
+- [x] test_critic for 909384a9 — 8m 19s
+- [!] interaction_e2e for 909384a9 — 2m 42s !! opencode exited with code unknown
+- [x] security_critic for 909384a9 — 7m 5s
+- [x] parse_everything_critic for 909384a9 — 20m 23s
+- [x] code_critic for 909384a9 — 17m 33s
+- [x] test_critic for 909384a9 — 11m 17s
+- [x] interaction_e2e for 909384a9 — 14m 26s
+- [x] security_critic for 909384a9 — 5m 55s
+- [x] parse_everything_critic for 909384a9 — 9m 7s
+- [x] code_critic for 8a72f30e — 25m 56s
+- [x] test_critic for 8a72f30e — 26m 19s
+- [x] interaction_e2e for 8a72f30e — 39m 35s
+- [x] security_critic for 8a72f30e — 6m 9s
+- [x] parse_everything_critic for 8a72f30e — 1m 40s
+- [x] code_critic for 8a72f30e — 14m 45s
+- [x] test_critic for 8a72f30e — 12m 48s
+- [!] interaction_e2e for 8a72f30e — 5m 29s !! opencode exited with code 1
+- [!] security_critic for 8a72f30e — 7m 14s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
+- [ ] parse_everything_critic for 8a72f30e
+- [!] interaction_e2e for 8a72f30e (retry) — 4m 39s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
+- [x] code_critic for 8a72f30e — 20m 5s
+- [x] test_critic for 8a72f30e — 9m 31s
+- [x] interaction_e2e for 8a72f30e — 11m 46s
+- [x] security_critic for 8a72f30e — 10m 14s
+- [x] parse_everything_critic for 8a72f30e — 10m 32s
+- [x] code_critic for 8a72f30e — 15m 2s
+- [x] test_critic for 8a72f30e — 9m 31s
+- [x] interaction_e2e for 8a72f30e — 14m 23s
+- [x] security_critic for 8a72f30e — 16m 40s
+- [x] parse_everything_critic for 8a72f30e — 8m 28s
+- [x] code_critic for 8a72f30e — 3m 59s
+- [x] test_critic for 8a72f30e — 6m 6s
+- [x] interaction_e2e for 8a72f30e — 3m 10s
+- [x] security_critic for 8a72f30e — 4m 30s
+- [x] parse_everything_critic for 8a72f30e — 6m 19s
