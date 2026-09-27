@@ -1,9 +1,10 @@
 {
   "_provenance": "Sanitized sleep-shape matrix (run 2026-09-17-normalizer-audit). Shapes mirror tests/acceptance/parse_everything.py and tests/unit/test_normalize.py (census-locked subsets of the audited corpora; research/predecessor-inventory.md section 7). Source names generic ('Apple Watch', 'AutoSleep', 'watch'); values kept only where the rule's precedence depends on them.",
-  "census_note": "census_weight is per lane: how many real corpus rows this single shape stands for. Audited decomposition (research section 7): recent 130 exports = 120 Watch sentinel nights + 8 AutoSleep naps + 2 in-bed-only = 130 sleep points -> 128 sleep_analysis rows kept + 2 in-bed-only split; backfill = 1,150 Watch sentinel nights + 50 mixed-stage nights + 1,000 AutoSleep rows + 300 in-bed-untracked rows = 2,500 sleep points -> 2,200 kept + 300 in-bed-only splits. The census-lock test (tests/unit/test_census_lock.py) asserts sum(weight x outcome) equals those numbers for both lanes; the 'in-bed split' census counts points whose only row is sleep_in_bed (co-emitted in-bed rows on nap/stage shapes are locked per-shape, not in the split census).",
+  "census_note": "census_weight is per lane: how many real corpus rows this single shape stands for. Audited decomposition (research section 7): recent 130 exports = 120 Watch sentinel nights + 8 AutoSleep naps + 2 in-bed-only = 130 sleep points -> 128 sleep_analysis rows kept + 2 in-bed-only split; backfill = 1,150 Watch sentinel nights + 50 mixed-stage nights + 1,000 AutoSleep rows + 300 in-bed-untracked rows = 2,500 sleep points -> 2,200 kept + 300 in-bed-only splits. The census-lock test (tests/unit/test_census_lock.py) asserts sum(weight x outcome) equals those numbers for both lanes; the 'in-bed split' census counts points whose only row is sleep_in_bed (co-emitted in-bed rows on nap/stage shapes are locked per-shape, not in the split census). expected_qty pins the stored qty per emitted row name for value-carrying shapes: the asleep:0 sentinel regression stores qty 0.0 behind unchanged row counts, so counts alone cannot see it — a shape whose expected sleep_analysis qty > 0 must never store 0.0 (anti-scenario 2).",
   "fixtures": [
     {
       "id": "watch_sentinel_night",
+      "expected_qty": { "sleep_analysis": 6.4, "sleep_in_bed": 0 },
       "desc": "Scenario 1: REST Watch night with asleep:0 sentinel; totalSleep wins (1,150 backfill nights + 120 recent nights)",
       "point": {
         "date": "2026-09-17 00:00:00 +0900",
@@ -22,6 +23,7 @@
     },
     {
       "id": "mixed_stage_night",
+      "expected_qty": { "sleep_analysis": 8.4, "sleep_in_bed": 0 },
       "desc": "Scenario 2: Watch mixed-stage night where asleep is a REAL 4th stage; totalSleep = core+deep+rem+asleep exactly (50/50 verified)",
       "point": {
         "date": "2024-10-09 00:00:00 +0900",
@@ -40,6 +42,7 @@
     },
     {
       "id": "autosleep_nap",
+      "expected_qty": { "sleep_analysis": 0.58, "sleep_in_bed": 0.58 },
       "desc": "Scenario 3: AutoSleep row, asleep-only value; the fixture nap carries inBed == asleep (real AutoSleep shape) so the in-bed split co-emits BOTH rows",
       "point": {
         "date": "2026-09-17 00:00:00 +0900",
@@ -58,6 +61,7 @@
     },
     {
       "id": "inbed_only_row",
+      "expected_qty": { "sleep_analysis": 0, "sleep_in_bed": 7.3 },
       "desc": "Scenario 4: pre-Watch era in-bed-untracked row (all sleep fields 0, inBed>0); emits only sleep_in_bed, zero sleep_analysis rows",
       "point": {
         "date": "2018-04-02 00:00:00 +0900",
@@ -76,6 +80,7 @@
     },
     {
       "id": "no_totalsleep_shape",
+      "expected_qty": { "sleep_analysis": 7.0, "sleep_in_bed": 0 },
       "desc": "Scenario 9: {date, asleep, core, deep, rem} without totalSleep; loosened recognition keeps it (asleep wins), not a drop",
       "point": {
         "date": "2026-09-08",

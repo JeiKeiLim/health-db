@@ -10,9 +10,22 @@ outcomes for run 2026-09-17-normalizer-audit:
 The committed fixtures are heavily trimmed (5 shapes, not 2,600 rows), so
 each shape carries a ``census_weight``: the number of real corpus rows it
 stands for. The lock asserts ``sum(weight × outcome) == census`` per lane.
-Drifting the rule (e.g. the asleep:0 sentinel winning again) or editing a
-fixture shape without re-deriving its weight breaks this test — the two
-must move together.
+
+Two regression classes are covered, and BOTH must break the lock:
+
+1. Count/split drift — a rule change that stores a different number of
+   sleep_analysis / sleep_in_bed rows (e.g. the in-bed split firing when it
+   should not, or a recognized shape silently dropped). The weighted count
+   parity above stops this.
+2. Sentinel qty regression (anti-scenario 2) — the original defect stored
+   qty 0.0 behind UNCHANGED row counts (one sleep_analysis row per night),
+   so counts alone cannot see it. Each shape therefore also pins
+   ``expected_qty`` per emitted row name; a value-carrying shape whose
+   stored sleep_analysis qty is 0.0 (the ``asleep: 0`` sentinel winning
+   again) fails the lock even though every count matches.
+
+Drifting the rule or editing a fixture shape (counts or qty) without
+re-deriving its weight breaks this test — the two must move together.
 
 No docker, no I/O beyond reading the committed JSON fixtures: pure
 normalizer in, outcome table out. Deterministic and fast by construction.
@@ -22,6 +35,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
+import pytest
 
 from health_db.normalize import SLEEP_IN_BED, metric_rows_detailed
 
@@ -43,16 +58,24 @@ def _matrix() -> list[dict]:
     return fixtures
 
 
-def _outcome(point: dict) -> dict[str, int]:
-    """Run the sleep value rule over one point → {row_name: count}."""
+def _outcome(point: dict) -> dict[str, dict[str, float]]:
+    """Run the sleep value rule over one point → per-row-name outcome.
+
+    Returns ``{row_name: {"count": n, "qty_sum": total}}`` — the qty sum
+    (one row per name per point here) is what pins the sentinel rule:
+    the ``asleep: 0`` regression stores count 1 with qty 0.0, invisible
+    to a count-only lock.
+    """
     document = {
         "data": {"metrics": [{"name": "sleep_analysis", "units": "hr", "data": [point]}]}
     }
     rows, _skips = metric_rows_detailed(document)
-    counts: dict[str, int] = {}
+    outcome: dict[str, dict[str, float]] = {}
     for row in rows:
-        counts[row.name] = counts.get(row.name, 0) + 1
-    return counts
+        entry = outcome.setdefault(row.name, {"count": 0, "qty_sum": 0.0})
+        entry["count"] += 1
+        entry["qty_sum"] += row.qty
+    return outcome
 
 
 def _weights_by_shape_id(fixtures: list[dict]) -> dict[str, dict[str, int]]:
@@ -70,34 +93,55 @@ def _weights_by_shape_id(fixtures: list[dict]) -> dict[str, dict[str, int]]:
 def _assert_shape_outcomes(fixtures: list[dict]) -> None:
     """Each shape must normalize to the documented outcome (per-row lock).
 
-    The expected table asserts the sleep_analysis outcome AND the in-bed
-    co-emission behavior (0 = no sleep_in_bed row may co-emit, ≥1 = the
-    split fires). The census split numbers count points whose ONLY row is
+    The expected table asserts, per emitted row name: the row COUNT and
+    the stored QTY. The qty pin is the sentinel guard (anti-scenario 2):
+    the ``asleep: 0`` regression keeps every count identical (one
+    sleep_analysis row per night) while storing 0.0 — only the qty
+    assertion sees it. The in-bed column doubles as the co-emission lock
+    (0 = no sleep_in_bed row may co-emit, >0 = the split fires with that
+    qty; the census split numbers count points whose ONLY row is
     sleep_in_bed — co-emitted in-bed rows on value-carrying shapes are
-    locked here per shape instead.
+    locked here per shape instead).
     """
     expected = {
-        "watch_sentinel_night": {"sleep_analysis": 1, SLEEP_IN_BED: 0},
-        "mixed_stage_night": {"sleep_analysis": 1, SLEEP_IN_BED: 0},
-        "autosleep_nap": {"sleep_analysis": 1, SLEEP_IN_BED: 1},
-        "inbed_only_row": {"sleep_analysis": 0, SLEEP_IN_BED: 1},
-        "no_totalsleep_shape": {"sleep_analysis": 1, SLEEP_IN_BED: 0},
+        "watch_sentinel_night": {"sleep_analysis": (1, 6.4), SLEEP_IN_BED: (0, 0.0)},
+        "mixed_stage_night": {"sleep_analysis": (1, 8.2), SLEEP_IN_BED: (0, 0.0)},
+        "autosleep_nap": {"sleep_analysis": (1, 0.58), SLEEP_IN_BED: (1, 0.58)},
+        "inbed_only_row": {"sleep_analysis": (0, 0.0), SLEEP_IN_BED: (1, 7.3)},
+        "no_totalsleep_shape": {"sleep_analysis": (1, 7.0), SLEEP_IN_BED: (0, 0.0)},
     }
     for entry in fixtures:
         got = _outcome(entry["point"])
         want = dict(expected[entry["id"]])
-        coemit = want.pop(SLEEP_IN_BED)
-        assert got.get("sleep_analysis", 0) == want["sleep_analysis"], (
-            f"shape {entry['id']} drifted: sleep_analysis {got} != {want}"
-        )
-        if coemit == 0:
-            assert SLEEP_IN_BED not in got, (
-                f"shape {entry['id']}: sleep_in_bed must not co-emit"
+        for row_name, (want_count, want_qty) in want.items():
+            entry_outcome = got.get(row_name, {"count": 0, "qty_sum": 0.0})
+            assert entry_outcome["count"] == want_count, (
+                f"shape {entry['id']} drifted: {row_name} count "
+                f"{entry_outcome['count']} != {want_count}"
             )
-        else:
-            assert got.get(SLEEP_IN_BED, 0) >= coemit, (
-                f"shape {entry['id']}: sleep_in_bed row missing"
+            assert entry_outcome["qty_sum"] == pytest.approx(want_qty), (
+                f"shape {entry['id']} drifted: {row_name} qty "
+                f"{entry_outcome['qty_sum']} != {want_qty}"
             )
+        extra = set(got) - set(want)
+        assert not extra, f"shape {entry['id']}: unexpected rows {extra}"
+
+
+class TestSentinelQtyLock:
+    """Anti-scenario 2 as a standalone property: a value-carrying sleep
+    shape must never store qty 0.0 behind an unchanged row count."""
+
+    def test_no_zero_qty_on_value_carrying_shapes(self):
+        for entry in _matrix():
+            got = _outcome(entry["point"])
+            expected_qty = entry["expected_qty"]
+            for row_name in ("sleep_analysis", SLEEP_IN_BED):
+                if expected_qty.get(row_name, 0) > 0:
+                    row_outcome = got.get(row_name, {"count": 0, "qty_sum": 0.0})
+                    assert row_outcome["count"] > 0 and row_outcome["qty_sum"] > 0, (
+                        f"sentinel regression on {entry['id']}: {row_name} "
+                        f"stored {row_outcome} (qty must be {expected_qty[row_name]})"
+                    )
 
 
 class TestCensusLock:
@@ -139,7 +183,7 @@ class TestCensusLock:
         recent_sleep = recent_inbed = backfill_sleep = backfill_inbed = 0
         for entry in fixtures:
             got = _outcome(entry["point"])
-            sleep = got.get("sleep_analysis", 0)
+            sleep = got.get("sleep_analysis", {}).get("count", 0)
             # Census split definition (spec §1): points whose ONLY row is
             # sleep_in_bed — a value row plus a co-emitted in-bed row is
             # one kept sleep point, not an in-bed split.
