@@ -55,8 +55,13 @@ tools use.
 - **Idempotency**: duplicate payloads (same sha256) return `200 {"outcome":"duplicate"}`;
   samples upsert latest-wins on `(metric_id, source_id, ts)`; workouts upsert by HAE
   UUID. Re-posting any chunk is always safe — row counts never change.
-- **Canonical units**: non-canonical-unit samples are skipped (never stored next to
-  canonical rows). The only conversion is kJ→kcal ÷ 4.184. **All workout energies are
+- **Canonical units**: non-canonical-unit samples are converted with an exact
+  factor when one exists, else skipped visibly (counted in the ingest response's
+  `skipped.unit_unconvertible`). Conversion factors (iron law 4, amended
+  2026-09-17-normalizer-audit): lb→kg ÷ 2.20462, st→kg ÷ 0.157473,
+  °F→°C (°F−32)×5/9 (wrist temperature), kJ→kcal ÷ 4.184. Converted rows store
+  the canonical unit string; units with no exact factor are never stored next to
+  canonical rows — they are dropped but always counted. **All workout energies are
   stored in kcal** (`active_energy_kcal`, `total_energy`, `basal_energy`): real HAE v2
   payloads send `activeEnergyBurned`/`totalEnergy` as `{qty, units:'kJ'}` objects and
   `activeEnergy`/`basalEnergy` as per-minute `kJ` point lists, which are summed then
@@ -167,6 +172,25 @@ Automations 1 and 2 are deliberately disjoint to keep hourly payloads small.
 ## Backfill runbook (full history)
 
 History is backfilled through the same ingest endpoint — no SQLite migration.
+
+> **⚠️ Deploy BEFORE backfill.** Never run the full-history backfill against a
+> deployment older than the `parse-everything` normalizer fix
+> (2026-09-17-normalizer-audit). Older deployments store every Watch night's
+> sleep as 0.0 (asleep:0 sentinel), silently drop the `data.ecg` /
+> `data.heartRateNotifications` lanes, and skip lb/st/°F rows — ingesting 8
+> years through them would bake those defects into the archive. Order:
+>
+> 1. Land the fixed code, rebuild, redeploy (`health-migrate` applies
+>    migration 0002).
+> 2. Repair the already-ingested days:
+>    ```sh
+>    docker exec health-db health-replay --dir data/archive --force
+>    ```
+> 3. Verify the repair via MCP before starting the backfill —
+>    `query_day` for 2026-09-15/16/17 on `sleep_analysis` must return
+>    6.21 / 6.34 / 6.37 (not 0.0).
+> 4. Only then run the backfill chunks below (ECG/notifications and unit
+>    conversions are exercised on first ingestion).
 
 1. In HAE: **Manual Export** → JSON v2, per-year date-range chunks (one chunk per year
    of history), all metrics + workouts, Summarize ON, Batch Requests ON.
