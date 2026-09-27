@@ -242,6 +242,36 @@ class TestValidatedOffset:
         with pytest.raises(InvalidParameter, match="integer"):
             queries._validated_offset(False, "voltage_offset")  # type: ignore[arg-type]
 
+    def test_offset_at_bigint_ceiling_is_actionable_not_db_crash(self):
+        """2**63 is past PostgreSQL's bigint OFFSET: must raise
+        InvalidParameter at the guard (before any pool borrow), never
+        NumericValueOutOfRange from the SQL layer."""
+        with pytest.raises(InvalidParameter, match="voltage_offset must be below"):
+            queries._validated_offset(2**63, "voltage_offset")
+
+    def test_offset_boundary_2_pow_62_accepted(self):
+        """2**62 is inside the bigint range — passes through unclamped."""
+        assert queries._validated_offset(2**62, "voltage_offset") == 2**62
+
+    def test_offset_just_below_ceiling_accepted(self):
+        assert queries._validated_offset(2**63 - 2, "voltage_offset") == 2**63 - 2
+
+    def test_offset_ceiling_minus_one_accepted(self):
+        assert queries._validated_offset(queries.OFFSET_MAX_BIGINT - 1, "voltage_offset") == (
+            queries.OFFSET_MAX_BIGINT - 1
+        )
+
+
+class TestValidatedLaneId:
+    """Non-int lane ids raise the caller's exception (UnknownEcg)."""
+
+    def test_int_string_passes_through(self):
+        assert queries._validated_lane_id("42", UnknownEcg) == 42
+
+    def test_non_int_raises_unknown_ecg(self):
+        with pytest.raises(UnknownEcg, match="list_ecgs"):
+            queries._validated_lane_id("bogus", UnknownEcg)
+
 
 # ---------------------------------------------------------------------------
 # Schema resource (static; no pool)

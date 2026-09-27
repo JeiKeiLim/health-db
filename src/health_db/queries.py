@@ -53,6 +53,13 @@ ECG_HRN_MAX_LIMIT = 500
 VOLTAGE_DEFAULT_LIMIT = 1000
 VOLTAGE_MAX_LIMIT = 10000
 
+# Page-offset ceiling: the PostgreSQL OFFSET clause is a bigint, so an
+# offset at/above 2**63 would surface as a masked NumericValueOutOfRange
+# from the SQL layer instead of an actionable message (job-8 eval finding:
+# 2**63 through get_ecg_detail) — _validated_offset rejects it before any
+# pool borrow.
+OFFSET_MAX_BIGINT = 2**63 - 1
+
 # A metric is stale when its last day is older than the consensus day by
 # more than this many days (spec scenario 4: "median-based staleness").
 STALENESS_TOLERANCE_DAYS = 1
@@ -707,7 +714,7 @@ def get_ecg_detail(
     the last page. Unknown ids raise :class:`UnknownEcg` (actionable:
     points at ``list_ecgs``).
     """
-    ecg_id_num = _validated_lane_id(ecg_id, "ECG", UnknownEcg)
+    ecg_id_num = _validated_lane_id(ecg_id, UnknownEcg)
     voltage_offset = _validated_offset(voltage_offset, "voltage_offset")
     voltage_limit = _bounded_limit(
         voltage_limit, VOLTAGE_DEFAULT_LIMIT, VOLTAGE_MAX_LIMIT, "voltage_limit"
@@ -850,17 +857,29 @@ def list_heart_notifications(
 
 
 def _validated_offset(offset: int, label: str) -> int:
-    """Non-negative integer page offset (InvalidParameter otherwise)."""
+    """Non-negative integer page offset (InvalidParameter otherwise).
+
+    Negative values clamp to 0 (a caller asking before the first page gets
+    the first page); offsets above the PostgreSQL bigint OFFSET ceiling
+    (2**63 - 1) raise :class:`InvalidParameter` — they cannot page anything
+    real and would otherwise crash in the SQL layer.
+    """
     if not isinstance(offset, int) or isinstance(offset, bool):
         raise InvalidParameter(f"{label} must be an integer")
+    if offset >= OFFSET_MAX_BIGINT:
+        raise InvalidParameter(
+            f"{label} must be below {OFFSET_MAX_BIGINT} "
+            "(PostgreSQL OFFSET is a bigint)"
+        )
     return offset if offset >= 0 else 0
 
 
-def _validated_lane_id(value: str, label: str, exc_type: type[Exception]) -> int:
-    """Parse a lane-row id (integer identity) or raise the caller's error type.
+def _validated_lane_id(value: str, exc_type: type[Exception]) -> int:
+    """Parse a lane-row id (integer identity) or raise the caller's error.
 
     ``exc_type`` is :class:`UnknownEcg` — the same actionable shape the
-    workout path uses with :class:`UnknownWorkout`.
+    workout path uses with :class:`UnknownWorkout`; the exception itself
+    owns the lane-named message (id + the listing tool to call).
     """
     try:
         return int(str(value))
