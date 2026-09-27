@@ -20,3 +20,4 @@ AGENTS.md
 
 # Tenet live SQLite runtime state. Do not track this in Git.
 .tenet/.state/
+.tenet/state.db
