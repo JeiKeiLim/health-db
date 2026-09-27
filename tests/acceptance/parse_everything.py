@@ -354,6 +354,31 @@ class TestUnitConversion:
         # accounting mechanism itself is asserted in the sleep case below.
         assert "skipped" in body, "ingest response must carry the skipped accounting object"
 
+    def test_unconvertible_unit_count_is_one(self, api, pg):
+        """test_critic follow-up: a truly unconvertible unit must surface
+        skipped.unit_unconvertible == 1 through the live ingest response."""
+        import json as _json
+
+        payload = {"data": {"metrics": [
+            {
+                "name": "weight_body_mass", "units": "gal",
+                "data": [{"qty": 5.0, "date": "2026-09-08 09:00:00 +0900"}],
+            }
+        ], "workouts": []}}
+        res = api._client.post(
+            "/api/ingest", content=_json.dumps(payload).encode("utf-8"), headers=api._headers
+        )
+        assert res.status_code == 200, f"ingest failed: {res.status_code}"
+        body = res.json()
+        assert body["skipped"]["unit_unconvertible"] == 1, (
+            "a 'gal' weight row has no exact factor: it must be counted, never silent"
+        )
+        stored = pg.scalar(
+            "SELECT count(*) FROM raw_samples rs JOIN metric_dim md USING (metric_id)"
+            " WHERE md.name='weight_body_mass'"
+        )
+        assert stored == 0, "no row may exist for an unconvertible unit"
+
 
 # ---------------------------------------------------------------------------
 # Scenario 8-9: repair path + loosened recognition
