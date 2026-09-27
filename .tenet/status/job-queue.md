@@ -1,6 +1,6 @@
 # Job Queue
 
-Updated: 2026-09-27T19:46:11.189Z
+Updated: 2026-09-27T19:47:20.391Z
 
 - [x] Integration: parse-everything acceptance + full unit gate (e2e-1) — 11m 20s
 - [x] Final E2E: full gate + deployment handoff doc (e2e-2) — 10m 22s
@@ -297,10 +297,10 @@ Updated: 2026-09-27T19:46:11.189Z
 - [x] security_critic for 0963bdbe — 1m 54s
 - [x] parse_everything_critic for 0963bdbe — 25m 20s
 - [!] code_critic for 0963bdbe — 14m 11s !! opencode exited with code 1
-- [ ] test_critic for 0963bdbe
-- [ ] interaction_e2e for 0963bdbe
-- [ ] security_critic for 0963bdbe
-- [ ] parse_everything_critic for 0963bdbe
+- [-] test_critic for 0963bdbe !! cancelled by user
+- [-] interaction_e2e for 0963bdbe !! cancelled by user
+- [-] security_critic for 0963bdbe !! cancelled by user
+- [-] parse_everything_critic for 0963bdbe !! cancelled by user
 - [x] code_critic for 0963bdbe — 65m 41s
 - [x] test_critic for 0963bdbe — 22m 55s
 - [x] interaction_e2e for 0963bdbe — 3m 22s
@@ -355,7 +355,7 @@ Updated: 2026-09-27T19:46:11.189Z
 - [x] test_critic for 8a72f30e — 12m 48s
 - [!] interaction_e2e for 8a72f30e — 5m 29s !! opencode exited with code 1
 - [!] security_critic for 8a72f30e — 7m 14s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
-- [ ] parse_everything_critic for 8a72f30e
+- [-] parse_everything_critic for 8a72f30e !! cancelled by user
 - [!] interaction_e2e for 8a72f30e (retry) — 4m 39s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
 - [x] code_critic for 8a72f30e — 20m 5s
 - [x] test_critic for 8a72f30e — 9m 31s
