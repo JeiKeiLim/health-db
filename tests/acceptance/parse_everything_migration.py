@@ -201,11 +201,13 @@ class TestMigration0002Applied:
         from health_db.db.migrations import applied_versions
 
         with pg.pool.connection() as conn:
-            assert applied_versions(conn) == {1, 2}, "module fixture applied 0001 then 0002"
+            assert applied_versions(conn) == {1, 2, 3}, (
+                "module fixture applied 0001 → 0002 → 0003"
+            )
 
     def test_apply_all_applies_both_on_fresh_schema(self, pg, tmp_path):
         """Full applier contract on a virgin schema inside the SAME container:
-        a fresh search_path sees neither version; apply_all lands [1, 2]."""
+        a fresh search_path sees neither version; apply_all lands [1, 2, 3]."""
         import psycopg
         from psycopg_pool import ConnectionPool
 
@@ -228,8 +230,8 @@ class TestMigration0002Applied:
         try:
             with probe.connection() as conn:
                 applied = apply_all(conn)
-                assert applied == [1, 2], "fresh schema: 0001 then 0002, in order"
-                assert applied_versions(conn) == {1, 2}
+                assert applied == [1, 2, 3], "fresh schema: 0001 → 0002 → 0003, in order"
+                assert applied_versions(conn) == {1, 2, 3}
                 assert apply_all(conn) == [], "re-run against a migrated DB applies nothing"
         finally:
             probe.close()
@@ -383,7 +385,7 @@ class TestAdditiveOnly:
     def test_0001_tables_keep_their_columns(self, pg):
         for table, expected in self.EXPECTED_0001_COLUMNS.items():
             cols = set(_column_map(pg, table))
-            assert cols == expected, f"{table} must be untouched by 0002"
+            assert cols == expected, f"{table} must be untouched by later migrations"
 
     def test_migration_file_has_no_alter_or_drop(self):
         from pathlib import Path
