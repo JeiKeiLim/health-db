@@ -64,6 +64,11 @@ from health_db.normalize import (
 )
 from health_db.payloads import _classify_data_type, empty_skipped, merge_skipped
 
+# raw_samples executemany batch cap — same spec §8 rationale as
+# normalize.ECG_VOLTAGE_BATCH (bounded pipelines; unbounded 57k-statement
+# pipelines abort on modest hardware).
+SAMPLE_UPSERT_BATCH = ECG_VOLTAGE_BATCH
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import date
@@ -132,7 +137,15 @@ def _sample_days(rows: list[SampleRow]) -> frozenset[date]:
 
 
 def _upsert_samples(conn: ConnectionType, ids: _Ids, rows: list[SampleRow]) -> int:
-    """executemany latest-wins upsert; returns the number of rows offered."""
+    """executemany latest-wins upsert; returns the number of rows offered.
+
+    Offered rows are chunked into ≤``SAMPLE_UPSERT_BATCH``-sized
+    executemany calls (mirroring the ECG voltage lane): psycopg runs
+    executemany in pipeline mode, and an unbounded 52,000-statement
+    pipeline (the full-history backfill metrics lane) exhausts the client/
+    server buffers on modest hardware — the batch cap keeps every
+    pipeline bounded exactly like the 600k-voltage lane (spec §8).
+    """
     if rows:
         data = [
             (
@@ -146,7 +159,10 @@ def _upsert_samples(conn: ConnectionType, ids: _Ids, rows: list[SampleRow]) -> i
         from health_db.db.helpers import UPSERT_SAMPLE
 
         with conn.cursor() as cur:
-            cur.executemany(UPSERT_SAMPLE, data)
+            for offset in range(0, len(data), SAMPLE_UPSERT_BATCH):
+                cur.executemany(
+                    UPSERT_SAMPLE, data[offset : offset + SAMPLE_UPSERT_BATCH]
+                )
     return len(rows)
 
 

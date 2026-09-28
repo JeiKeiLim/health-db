@@ -385,6 +385,60 @@ class TestLaneSqlConstants:
 
         assert ECG_VOLTAGE_BATCH == 10_000
 
+    def test_sample_upsert_batches_never_exceed_cap(self):
+        """The metrics lane chunks >cap rows through bounded executemany
+        calls: drive the REAL ingest_payload with 10,003 samples and assert
+        every row reaches the upsert while no single executemany call
+        exceeded the cap (observed via the fake cursor's batch-size log —
+        the batching arithmetic is never re-implemented here).
+
+        Regression: the full-history backfill metrics chunk (52,000 points) was
+        one unbounded pipelined executemany that aborted mid-pipeline on
+        the server deployment (DbUnavailable → 503 → pending queue).
+        """
+        from health_db.pipeline import SAMPLE_UPSERT_BATCH
+
+        assert SAMPLE_UPSERT_BATCH == 10_000
+
+        total = 10_003  # one full batch + a 3-row tail (non-multiple size)
+        metric = {
+            "name": "step_count",
+            "units": "count",
+            "data": [
+                {"qty": 1.0,
+                 "date": "2026-01-01 00:00:00 +0900",
+                 "source": "Jongkuk의 Apple Watch"},
+            ],
+        }
+        # 10,003 distinct parseable timestamps spread over hours + seconds
+        metric["data"] = [
+            {
+                "qty": 1.0,
+                "date": (
+                    f"2026-01-01 {i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d} +0900"
+                ),
+                "source": "Jongkuk의 Apple Watch",
+            }
+            for i in range(total)
+        ]
+        doc = lane_doc(metrics=[metric])
+        pool = _FakePool()
+        result = ingest_payload(
+            pool, doc, sha256=_sha_of(doc), body=json.dumps(doc).encode("utf-8")
+        )
+        assert result.outcome == "stored"
+        assert result.samples == total
+        assert len(pool.txn.raw_samples) == total
+        # The observed chunk sizes honor the cap and sum to the total.
+        sizes = [size for (frag, size) in pool.txn.executemany_sizes if "raw_samples" in frag]
+        assert sum(sizes) == total
+        assert all(size <= SAMPLE_UPSERT_BATCH for size in sizes), (
+            f"no executemany may exceed the {SAMPLE_UPSERT_BATCH} cap: {sizes}"
+        )
+        assert sizes == [SAMPLE_UPSERT_BATCH, total - SAMPLE_UPSERT_BATCH], (
+            "one full batch + the remainder tail"
+        )
+
     def test_voltage_batches_never_exceed_cap(self):
         """The REAL ingest_payload loop chunks >10k voltages: drive it with
         10,003 voltages through the fake pool and assert every row reaches

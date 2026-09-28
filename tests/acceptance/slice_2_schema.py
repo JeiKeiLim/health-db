@@ -422,7 +422,15 @@ class TestEnsurePartitionsReal:
             ensured = ensure_backfill_range(
                 conn, first_day=date(2024, 3, 15), last_day=date(2024, 4, 2)
             )
-        assert ensured == ["raw_samples_p2024_03", "raw_samples_p2024_04"]
+        # One-month KST margin on each side (UTC partition key vs KST-day
+        # range: boundary rows of the first/last KST days live in the
+        # neighboring UTC months' partitions).
+        assert ensured == [
+            "raw_samples_p2024_02",
+            "raw_samples_p2024_03",
+            "raw_samples_p2024_04",
+            "raw_samples_p2024_05",
+        ]
         metric = insert_metric(migrated)
         source = insert_source(migrated)
         with migrated.pool.connection() as conn:
@@ -434,7 +442,13 @@ class TestEnsurePartitionsReal:
                 "INSERT INTO raw_samples (metric_id, source_id, ts, qty) VALUES (%s, %s, %s, 4)",
                 (metric, source, datetime(2024, 4, 1, 12, tzinfo=UTC)),
             )
-        assert migrated.scalar("SELECT count(*) FROM raw_samples") == 2
+            # KST boundary row: 2024-03-15 00:00 KST = 2024-03-14 15:00 UTC —
+            # still insertable (the p2024_03 partition covers it).
+            conn.execute(
+                "INSERT INTO raw_samples (metric_id, source_id, ts, qty) VALUES (%s, %s, %s, 5)",
+                (metric, source, datetime(2024, 3, 14, 15, tzinfo=UTC)),
+            )
+        assert migrated.scalar("SELECT count(*) FROM raw_samples") == 3
 
 
 def partition_names(pg) -> list[str]:
