@@ -1,6 +1,6 @@
 # Job Queue
 
-Updated: 2026-09-27T19:47:20.391Z
+Updated: 2026-09-28T07:24:13.042Z
 
 - [x] Integration: parse-everything acceptance + full unit gate (e2e-1) — 11m 20s
 - [x] Final E2E: full gate + deployment handoff doc (e2e-2) — 10m 22s
@@ -402,3 +402,6 @@ Updated: 2026-09-27T19:47:20.391Z
 - [x] interaction_e2e for e0267826 — 22s
 - [x] security_critic for e0267826 — 51s
 - [x] parse_everything_critic for e0267826 — 11m 7s
+- [x] eval-mukx25rj — 56s
+- [x] eval-mukx4vg2 — 15s
+- [x] eval-mukx82yo — 44s

@@ -1,9 +1,24 @@
 {
   "version": 1,
   "critics": [
-    { "id": "code_critic", "builtin": true, "enabled": true, "full_context": true },
-    { "id": "test_critic", "builtin": true, "enabled": true, "full_context": true },
-    { "id": "interaction_e2e", "builtin": true, "enabled": true, "full_context": false },
+    {
+      "id": "code_critic",
+      "builtin": true,
+      "enabled": true,
+      "full_context": true
+    },
+    {
+      "id": "test_critic",
+      "builtin": true,
+      "enabled": true,
+      "full_context": true
+    },
+    {
+      "id": "interaction_e2e",
+      "builtin": true,
+      "enabled": true,
+      "full_context": false
+    },
     {
       "id": "security",
       "builtin": false,
@@ -16,19 +31,19 @@
     {
       "id": "data-integrity",
       "builtin": false,
-      "enabled": false,
+      "enabled": true,
       "stage": "data_integrity_critic",
       "job_type": "critic_eval",
       "prompt_file": ".tenet/critics/data-integrity.md",
       "full_context": true
     },
     {
-      "id": "parse-everything",
+      "id": "sleep-session-fidelity",
       "builtin": false,
       "enabled": true,
-      "stage": "parse_everything_critic",
+      "stage": "sleep_session_fidelity_critic",
       "job_type": "critic_eval",
-      "prompt_file": ".tenet/runs/2026-09-17-normalizer-audit/critics/parse-everything.md",
+      "prompt_file": ".tenet/runs/2026-09-28-mcp-analysis-parity/critics/sleep-session-fidelity.md",
       "full_context": true
     }
   ]
