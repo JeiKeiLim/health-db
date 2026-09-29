@@ -421,6 +421,22 @@ class TestLaneSqlConstants:
         assert len(columns) == placeholder_count
         assert columns[0] == "source_name" and columns[-1] == "in_bed"
 
+    def test_sleep_session_upsert_updates_every_payload_column(self):
+        """DO UPDATE SET covers all 11 payload columns (all except the
+        (source_name, sleep_start) conflict key): a mutation dropping any
+        'col = EXCLUDED.col' entry would silently preserve stale stage
+        values on re-ingest — here each must appear verbatim."""
+        sql = " ".join(db_helpers.UPSERT_SLEEP_SESSION.split())
+        updated = ("record_date", "sleep_end", "in_bed_start", "in_bed_end",
+                   "total_sleep", "asleep", "deep", "core", "rem", "awake",
+                   "in_bed")
+        for column in updated:
+            assert f"{column} = EXCLUDED.{column}" in sql, (
+                f"DO UPDATE SET must propagate {column} (latest-wins: "
+                "re-ingest of the same (source_name, sleep_start) must "
+                "refresh every payload column, not just some)"
+            )
+
     def test_voltage_batch_cap_is_ten_thousand(self):
         from health_db.normalize import ECG_VOLTAGE_BATCH
 
