@@ -755,13 +755,16 @@ class TestSkipAccounting:
 
     def test_skipped_keys_contract_is_frozen_spec_set(self):
         # spec §5 drift-guard: keys are frozen by the run spec. A change
-        # here must be a spec change, never an accident.
+        # here must be a spec change, never an accident. ``sleep_session``
+        # was added additively by run 2026-09-28-mcp-analysis-parity §1
+        # (sleep-shaped points lacking a parseable sleepStart).
         assert SKIPPED_KEYS == (
             "unit_unconvertible",
             "unrecognized_shape",
             "ecg",
             "notification",
             "sleep_no_value",
+            "sleep_session",
         )
 
     def test_report_contract_frozen_with_skipped_field(self):

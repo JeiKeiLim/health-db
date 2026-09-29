@@ -85,6 +85,10 @@ SKIPPED_KEYS: tuple[str, ...] = (
     "ecg",
     "notification",
     "sleep_no_value",
+    # mcp-analysis-parity spec §1: a sleep-shaped point without a parseable
+    # sleep_start cannot join the sleep_sessions lane's (source_name,
+    # sleep_start) upsert key — dropped and counted, never silent.
+    "sleep_session",
 )
 _SKIPPED_ZERO: dict[str, int] = dict.fromkeys(SKIPPED_KEYS, 0)
 

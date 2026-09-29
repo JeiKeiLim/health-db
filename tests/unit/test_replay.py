@@ -310,6 +310,7 @@ class TestSkipAccounting:
             "ecg": 0,
             "notification": 3,
             "sleep_no_value": 1,
+            "sleep_session": 0,
         }
 
     def test_summary_carries_skip_accounting_json_ready(self, tmp_path, fake_pool):
@@ -327,6 +328,7 @@ class TestSkipAccounting:
             "ecg": 0,
             "notification": 0,
             "sleep_no_value": 0,
+            "sleep_session": 0,
         }
 
     def test_pending_replay_folds_skip_census(self, tmp_path, fake_pool):
@@ -418,6 +420,7 @@ class TestSkipAccounting:
             "ecg",
             "notification",
             "sleep_no_value",
+            "sleep_session",
         }
 
     def test_cli_prints_skip_accounting_diagnostics_to_stderr(

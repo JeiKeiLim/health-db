@@ -425,6 +425,37 @@ class HrnSampleRow:
     units: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SleepSessionRow:
+    """One ``sleep_sessions`` row (upsert key = (source_name, sleep_start),
+    UNIQUE; run 2026-09-28-mcp-analysis-parity spec §1).
+
+    One row per recognized aggregated-sleep record — every payload point the
+    existing branch yields a ``sleep_analysis`` or ``sleep_in_bed`` row for
+    (Watch nights, AutoSleep naps/dozes, in-bed-era rows). Per-source rows
+    are NEVER merged and no nap filtering happens server-side (the consumer
+    applies its own 16:00–18:59 exclusion). ALL fields are payload truth
+    VERBATIM (durations in hours): the ``asleep: 0`` Watch sentinel (1,150 /
+    1,200 backfill nights) stores 0.0, mixed-stage nights store their real
+    ``asleep`` — no re-derivation, no zero-filling in either direction.
+    Durations come from ``_num``; timestamps from ``_parse_ts``.
+    """
+
+    source_name: str
+    record_date: datetime
+    sleep_start: datetime
+    sleep_end: datetime | None = None
+    in_bed_start: datetime | None = None
+    in_bed_end: datetime | None = None
+    total_sleep: float | None = None
+    asleep: float | None = None
+    deep: float | None = None
+    core: float | None = None
+    rem: float | None = None
+    awake: float | None = None
+    in_bed: float | None = None
+
+
 # Skip-reason key (run spec §5): an ECG session dropped for an unparseable
 # start (cannot upsert latest-wins without (source, start)) or an empty
 # voltageMeasurements array (a session without samples carries no data).
@@ -1310,3 +1341,134 @@ def _hrn_rows(document: object) -> tuple[list[HrnRow], list[HrnSampleRow], dict[
         # drops → empty dict; job-4's merge_skipped treats absent keys as 0.
         skips[NOTIFICATION_SKIP] = dropped_total
     return event_rows, sample_rows, skips
+
+
+# Skip-reason key (mcp-analysis-parity spec §1): a recognized aggregated-
+# sleep point without a parseable ``sleepStart`` cannot join the
+# sleep_sessions lane's (source_name, sleep_start) latest-wins upsert key —
+# dropped and counted under ``skipped.sleep_session`` (zero-silent-drops
+# contract, iron law 8). The existing sleep_no_value / sleep_analysis /
+# sleep_in_bed emissions are untouched (census lock is the guard).
+SLEEP_SESSION_SKIP = "sleep_session"
+
+# Payload keys read verbatim into SleepSessionRow (mcp-analysis-parity
+# spec §1): timestamps via _parse_ts, durations via _num.
+_SLEEP_SESSION_TS_KEYS = {
+    "sleep_start": "sleepStart",
+    "sleep_end": "sleepEnd",
+    "in_bed_start": "inBedStart",
+    "in_bed_end": "inBedEnd",
+}
+_SLEEP_SESSION_NUM_KEYS = {
+    "total_sleep": "totalSleep",
+    "asleep": "asleep",
+    "deep": "deep",
+    "core": "core",
+    "rem": "rem",
+    "awake": "awake",
+    "in_bed": "inBed",
+}
+
+
+def _sleep_session_rows(document: object) -> tuple[list[SleepSessionRow], dict[str, int]]:
+    """Normalize ``data.metrics`` sleep-shaped points into (SleepSessionRows,
+    skip census) — the parallel session lane (mcp-analysis-parity spec §1).
+
+    Recognition is IDENTICAL to the existing aggregated-sleep dispatch
+    (``date`` key + ∩ :data:`_SLEEP_FIELD_KEYS` ≠ ∅, the guard
+    ``payloads._point_shape`` / ``_rows_for_point`` use): points matching
+    earlier-precedence shapes ({qty, date}, {startDate, endDate, qty}) are
+    NOT session records and yield nothing here.
+
+    One row per recognized record — per-source rows are NEVER merged and no
+    nap filtering happens server-side. Fields are stored VERBATIM (no
+    re-derivation, no zero-filling): the Watch ``asleep: 0`` sentinel stays
+    0.0, mixed-stage nights keep their real ``asleep``. A point without a
+    parseable ``sleepStart`` yields NO row and counts under
+    ``skipped.sleep_session`` (spec §1 — the natural key needs the start).
+    Duration coercion is overflow-guarded like the sibling lanes
+    (:func:`_hrn_sample_rows`, :func:`_hrn_event_fields`): JSON ints parse
+    natively (bypassing payloads' parse_float/parse_constant guards), so a
+    huge integer literal (10**400) in a duration field raises OverflowError
+    in :func:`_num`; the point drops + counts under ``sleep_session``
+    instead of crashing the payload.
+    Existing sleep_analysis/sleep_in_bed emissions are untouched; census
+    parity lives in tests/unit/test_census_lock.py. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
+    if not isinstance(document, dict):
+        return [], skips
+    data = document.get("data")
+    if not isinstance(data, dict):
+        return [], skips
+    metrics = data.get("metrics")
+    if not isinstance(metrics, list):
+        return [], skips
+
+    rows: list[SleepSessionRow] = []
+    for group in metrics:
+        if not isinstance(group, dict):
+            continue
+        points = group.get("data")
+        if not isinstance(points, list):
+            continue
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            keys = point.keys()
+            # Same recognition guard as _rows_for_point's aggregated-sleep
+            # branch (and earlier shapes keep their precedence — a {qty,
+            # date} point is not a session record even when a sleep field
+            # rides along).
+            if "qty" in keys and "date" in keys:
+                continue
+            if "startDate" in keys and "endDate" in keys and "qty" in keys:
+                continue
+            if not ("date" in keys and keys & _SLEEP_FIELD_KEYS):
+                continue
+            source = _source_of(group, point)
+            record_date = _parse_ts(point.get("date"))
+            sleep_start = _parse_ts(point.get("sleepStart"))
+            if record_date is None or sleep_start is None:
+                # record_date is NOT NULL and sleep_start is the upsert
+                # key's second half — either missing means no row, and the
+                # drop is VISIBLE (skipped.sleep_session, spec §1).
+                skips[SLEEP_SESSION_SKIP] = skips.get(SLEEP_SESSION_SKIP, 0) + 1
+                continue
+            timestamps = {
+                field: _parse_ts(point.get(key)) for field, key in _SLEEP_SESSION_TS_KEYS.items()
+            }
+            # Overflow-guarded coercion, mirroring _hrn_sample_rows /
+            # _hrn_event_fields: JSON ints parse natively (bypassing
+            # payloads' parse_float/parse_constant guards), so a huge
+            # integer literal like 10**400 in a duration field reaches
+            # _num and float() raises OverflowError — the point drops and
+            # counts under skipped.sleep_session (zero-silent-drops,
+            # never-crash discipline) instead of crashing the upsert.
+            # No partial row: one corrupt stage makes the record unusable
+            # verbatim (a NaN-like stage cannot be quietly repaired).
+            try:
+                durations = {
+                    field: _num(point.get(key)) for field, key in _SLEEP_SESSION_NUM_KEYS.items()
+                }
+            except OverflowError:
+                skips[SLEEP_SESSION_SKIP] = skips.get(SLEEP_SESSION_SKIP, 0) + 1
+                continue
+            rows.append(
+                SleepSessionRow(
+                    source_name=source,
+                    record_date=record_date,
+                    sleep_start=sleep_start,
+                    sleep_end=timestamps["sleep_end"],
+                    in_bed_start=timestamps["in_bed_start"],
+                    in_bed_end=timestamps["in_bed_end"],
+                    total_sleep=durations["total_sleep"],
+                    asleep=durations["asleep"],
+                    deep=durations["deep"],
+                    core=durations["core"],
+                    rem=durations["rem"],
+                    awake=durations["awake"],
+                    in_bed=durations["in_bed"],
+                )
+            )
+    return rows, skips

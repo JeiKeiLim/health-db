@@ -38,13 +38,16 @@ STORED_RESPONSE_KEYS = {
 }
 
 # Spec §5 skip-accounting keys (frozen set; the response object always
-# carries every key, defaulting to 0).
+# carries every key, defaulting to 0). ``sleep_session`` added additively
+# by mcp-analysis-parity §1 (sleep-shaped points lacking a parseable
+# sleep_start in the parallel sessions lane).
 SKIPPED_ACCOUNTING_KEYS = {
     "unit_unconvertible",
     "unrecognized_shape",
     "ecg",
     "notification",
     "sleep_no_value",
+    "sleep_session",
 }
 
 # ---------------------------------------------------------------------------
