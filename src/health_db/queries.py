@@ -67,6 +67,12 @@ ROUTE_MAX_LIMIT = 10000
 SLEEP_SESSION_DEFAULT_LIMIT = 100
 SLEEP_SESSION_MAX_LIMIT = 500
 
+# Workout listing bounds (run 2026-09-28-mcp-analysis-parity §4: default 500,
+# max 2000 — the old hardcoded LIMIT 1000 silently truncated big ranges;
+# explicit paging with next_offset None = last page replaces it).
+WORKOUT_DEFAULT_LIMIT = 500
+WORKOUT_MAX_LIMIT = 2000
+
 # Page-offset ceiling: the PostgreSQL OFFSET clause is a bigint, so an
 # offset above 2**63 - 1 would surface as a masked NumericValueOutOfRange
 # from the SQL layer instead of an actionable message (job-8 eval finding:
@@ -495,21 +501,23 @@ def get_trends(
 
 
 def list_workouts(
-    start: str = "",
-    end: str = "",
+    frm: str = "",
+    to: str = "",
+    limit: int | None = None,
+    offset: int = 0,
     pool: ConnectionPool | None = None,
 ) -> dict[str, object]:
-    """Workouts in [from, to] KST days (inclusive), newest first."""
-    where = "WHERE TRUE"
-    params: list[object] = []
-    if start:
-        start_iso = _validated_day(start)
-        where += " AND w.day_kst >= %s"
-        params.append(start_iso)
-    if end:
-        end_iso = _validated_day(end)
-        where += " AND w.day_kst <= %s"
-        params.append(end_iso)
+    """Workouts in [from, to] KST days (inclusive), newest first.
+
+    ``limit`` clamps to ``[1, 2000]`` (spec §4: default 500; ``None`` selects
+    the default — the superseded hardcoded LIMIT 1000 truncated ranges
+    silently); ``offset`` follows :func:`_validated_offset`; ``next_offset``
+    is ``None`` on the last page so an LLM knows to stop paging
+    (raw_samples house convention). ``count`` stays the rows in *this page*.
+    """
+    limit = _bounded_limit(limit, WORKOUT_DEFAULT_LIMIT, WORKOUT_MAX_LIMIT, "limit")
+    offset = _validated_offset(offset, "offset")
+    where = _day_range_where("w", frm, to, params := [])
     with _resolve_pool(pool).connection() as conn:
         rows = _dict_rows(
             conn,
@@ -524,10 +532,12 @@ def list_workouts(
             FROM workouts w
             {where}
             ORDER BY w.start_ts DESC
-            LIMIT 1000
+            LIMIT %s OFFSET %s
             """,
-            params,
+            [*params, limit + 1, offset],
         )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
     workouts = []
     for row in rows:
         workouts.append(
@@ -546,7 +556,13 @@ def list_workouts(
                 "route_points": row["route_points"],
             }
         )
-    return {"workouts": workouts, "count": len(workouts)}
+    return {
+        "workouts": workouts,
+        "count": len(workouts),
+        "limit": limit,
+        "offset": offset,
+        "next_offset": offset + limit if has_more else None,
+    }
 
 
 def get_workout_detail(

@@ -101,6 +101,10 @@ class TestConstants:
         assert queries.ROUTE_DEFAULT_LIMIT == 1000
         assert queries.ROUTE_MAX_LIMIT == 10000
 
+    def test_workout_limit_bounds(self):
+        assert queries.WORKOUT_DEFAULT_LIMIT == 500
+        assert queries.WORKOUT_MAX_LIMIT == 2000
+
     def test_staleness_tolerance(self):
         assert queries.STALENESS_TOLERANCE_DAYS == 1
 

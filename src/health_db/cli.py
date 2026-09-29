@@ -105,7 +105,12 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[tuple[str, ...], dict[str, object]], ...]
         OPT_METRIC,
     ),
     "metrics": (),
-    "workouts": (OPT_FROM, OPT_TO),
+    "workouts": (
+        OPT_FROM,
+        OPT_TO,
+        (("--limit",), {"type": int, "default": queries.WORKOUT_DEFAULT_LIMIT}),
+        (("--offset",), {"type": int, "default": 0, "help": "0-based page offset"}),
+    ),
     "trends": (
         (("metric",), {"help": "metric name (see the metrics command)"}),
         (
@@ -214,9 +219,11 @@ def run_metrics(argv: list[str], *, q: object = queries, pool: object | None = N
 
 
 def run_workouts(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
-    """Workouts in an inclusive KST-day range (newest first)."""
+    """Workouts in an inclusive KST-day range (newest first; paged)."""
     args = _arg_parser("workouts").parse_args(argv)
-    result = q.list_workouts(args.frm, args.to, pool=pool)  # type: ignore[attr-defined]
+    result = q.list_workouts(  # type: ignore[attr-defined]
+        args.frm, args.to, limit=args.limit, offset=args.offset, pool=pool
+    )
     emit_json(result)
     return 0
 

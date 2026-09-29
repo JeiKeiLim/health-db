@@ -191,6 +191,17 @@ class TestBuildMcpServer:
         props = tool.parameters["properties"]
         assert "limit" in props and "offset" in props
 
+    def test_workouts_limit_bounds_documented(self):
+        """list_workouts exposes the paging params (run ... §4)."""
+        server = build_mcp_server(pool=_FakePool())
+        tool = next(
+            t for t in server._tool_manager.list_tools() if t.name == "list_workouts"
+        )
+        props = tool.parameters["properties"]
+        assert "from" in props and "to" in props
+        assert "frm" not in props
+        assert "limit" in props and "offset" in props
+
     def test_three_resources_registered(self):
         server = build_mcp_server(pool=_FakePool())
         uris = sorted(str(r.uri) for r in server._resource_manager.list_resources())

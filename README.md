@@ -27,7 +27,8 @@ MCP clients (Claude, …) ──streamable-http :8100/mcp──► queries.py (s
 
 ### MCP tools
 `query_day(date, metric?)` · `get_metric_series(metric, from, to)` · `list_metrics()` ·
-`list_workouts(from, to)` · `get_workout_detail(id, route_offset?, route_limit?)` — HR
+`list_workouts(from?, to?, limit, offset)` — paged (default 500, max 2000; `next_offset`
+None = last page) · `get_workout_detail(id, route_offset?, route_limit?)` — HR
 inline; GPS route paged (default 1000, max 10000; `route_count` + `next_route_offset`
 None = last page) · `get_trends(metric, window)` ·
 `freshness_check()` · `raw_samples(metric?, from?, to?, limit, offset)` ·
@@ -41,7 +42,7 @@ record (per-source rows never merged; durations in hours verbatim)
 ```
 uv run health query-day 2026-09-10
 uv run health metrics
-uv run health workouts --from 2026-09-01 --to 2026-09-10
+uv run health workouts --from 2026-09-01 --to 2026-09-10 --limit 100 --offset 0
 uv run health trends step_count --window 30
 uv run health freshness
 uv run health raw --metric step_count --from 2026-09-01 --to 2026-09-10 --limit 1000

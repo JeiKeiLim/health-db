@@ -282,7 +282,8 @@ def build_mcp_server(pool: object | None = None):
         name="list_workouts",
         description=(
             "Workouts in an inclusive KST-day range (newest first; "
-            "hr/route point counts included)."
+            "hr/route point counts included). Paging: limit default 500 "
+            "max 2000; next_offset None = last page."
         ),
         structured_output=True,
     )
@@ -296,8 +297,12 @@ def build_mcp_server(pool: object | None = None):
             ),
         ] = "",
         to: Annotated[str, Field(description="end day YYYY-MM-DD")] = "",
+        limit: Annotated[
+            int, Field(description="page size (default 500, max 2000)")
+        ] = queries.WORKOUT_DEFAULT_LIMIT,
+        offset: Annotated[int, Field(description="0-based page offset")] = 0,
     ) -> dict[str, object]:
-        return queries.list_workouts(frm, to, pool=pool)
+        return queries.list_workouts(frm, to, limit=limit, offset=offset, pool=pool)
 
     @server.tool(
         name="get_workout_detail",

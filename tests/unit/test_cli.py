@@ -52,8 +52,14 @@ class FakeQueries:
     def list_metrics(self, pool=None):  # noqa: ANN001
         return self._record("list_metrics", (), {"pool": pool})
 
-    def list_workouts(self, start, end, pool=None):  # noqa: ANN001
-        return self._record("list_workouts", (start, end), {"pool": pool})
+    def list_workouts(  # noqa: ANN001
+        self, frm="", to="", limit=500, offset=0, pool=None
+    ):
+        return self._record(
+            "list_workouts",
+            (frm, to),
+            {"limit": limit, "offset": offset, "pool": pool},
+        )
 
     def get_trends(self, metric, window, pool=None):  # noqa: ANN001
         return self._record("get_trends", (metric, window), {"pool": pool})
@@ -158,15 +164,39 @@ class TestHandlers:
         run_query_day(["2026-09-08"], q=fq, pool=1)
         assert fq.calls[0][2]["metric"] == ""
 
-    def test_workouts_passes_from_to(self, fq, out):
+    def test_workouts_passes_from_to_and_paging(self, fq, out):
         rc = run_workouts(["--from", "2026-09-01", "--to", "2026-09-08"], q=fq, pool=1)
         assert rc == 0
-        assert fq.calls == [("list_workouts", ("2026-09-01", "2026-09-08"), {"pool": 1})]
+        assert fq.calls == [
+            (
+                "list_workouts",
+                ("2026-09-01", "2026-09-08"),
+                {"limit": 500, "offset": 0, "pool": 1},
+            )
+        ]
         assert parsed_out(out)["args"] == ["2026-09-01", "2026-09-08"]
 
     def test_workouts_defaults_empty(self, fq, out):
         run_workouts([], q=fq, pool=1)
         assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 500
+        assert fq.calls[0][2]["offset"] == 0
+
+    def test_workouts_paging_flags_propagate(self, fq, out):
+        rc = run_workouts(
+            ["--from", "2018-01-01", "--to", "2018-12-31", "--limit", "100",
+             "--offset", "200"],
+            q=fq,
+            pool=1,
+        )
+        assert rc == 0
+        assert fq.calls == [
+            (
+                "list_workouts",
+                ("2018-01-01", "2018-12-31"),
+                {"limit": 100, "offset": 200, "pool": 1},
+            )
+        ]
 
     def test_trends_passes_metric_and_window(self, fq, out):
         run_trends(["step_count", "--window", "30"], q=fq, pool=1)
@@ -531,12 +561,13 @@ class TestCommandSurface:
         assert "--metric" in text
         assert "YYYY-MM-DD" in text
 
-    def test_workouts_help_shows_from_to(self, capsys):
+    def test_workouts_help_shows_from_to_and_paging(self, capsys):
         with pytest.raises(SystemExit) as exc:
             run_workouts(["--help"], q=FakeQueries(), pool=1)
         assert exc.value.code == 0
         text = capsys.readouterr().out
         assert "--from" in text and "--to" in text
+        assert "--limit" in text and "--offset" in text
 
     def test_raw_help_shows_pagination_flags(self, capsys):
         with pytest.raises(SystemExit) as exc:
