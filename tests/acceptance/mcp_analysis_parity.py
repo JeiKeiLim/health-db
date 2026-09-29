@@ -161,9 +161,9 @@ class TestScenario2NapAndNightCoexist:
         out = queries.list_sleep_sessions(frm="2026-09-17", to="2026-09-17", pool=pg.pool)
         assert out["count"] == 2  # latest-wins on (source_name, sleep_start)
 
-    def test_replay_idempotent(self, api, pg):
+    def test_replay_idempotent(self, api, pg, archive):
         _post_sleep(api, NIGHT_2026_09_17, AUTOSLEEP_NAP_2026_09_17)
-        root = api.route_archive_root()
+        root = archive.route_archive_root  # property on the Archive seam
         api.replay_dir(root, force=True)  # first force replay re-normalizes archive
         api.replay_dir(root, force=True)  # second changes nothing
         from health_db import queries

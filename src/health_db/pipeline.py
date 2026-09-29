@@ -22,10 +22,13 @@ payload (all-or-nothing per the interface contract):
    recompute from the full sample set of the day).
 5. Workouts upsert by UUID (latest-wins on re-send) + ``workout_heart_rate``
    + ``routes`` (kJ→kcal conversions already applied by the normalizer).
-6. ECG + heart-rate-notification lanes (run 2026-09-17-normalizer-audit §2/§3):
-   sessions upsert latest-wins on UNIQUE (source_name, start_ts) RETURNING
-   the DB id, then voltages/samples insert by (parent_id, seq/ts/kind) PK —
-   same transaction, same latest-wins idempotency, OUT of daily_rollups
+6. ECG + heart-rate-notification + sleep-session lanes (runs
+   2026-09-17-normalizer-audit §2/§3 + 2026-09-28-mcp-analysis-parity §1):
+   sessions upsert latest-wins on their natural key (ECG/HRN:
+   (source_name, start_ts); sleep_sessions: (source_name, sleep_start))
+   RETURNING the DB id (sleep_sessions needs no id — childless lane), then
+   voltages/samples insert by (parent_id, seq/ts/kind) PK — same
+   transaction, same latest-wins idempotency, OUT of daily_rollups
    (session lanes, like workouts).
 7. ``raw_ingest`` row (sha256 UNIQUE, headers, verbatim payload jsonb,
    ``outcome='stored'``) — the DB-side dedup signal for replay.
@@ -102,9 +105,9 @@ class IngestResult:
     ``skipped`` is the run-2026-09-17-normalizer-audit §5 visible-skip
     accounting (spec §5 keys, all defaulting to 0, always present): the
     payload's drop census — unit-unconvertible samples, all-zero sleep
-    points, unrecognized shapes, dropped ECG/notification rows — merged
-    from the normalizer + payloads report by :func:`ingest_payload`.
-    Informational only; never blocks the store.
+    points, unrecognized shapes, dropped ECG/notification/sleep-session
+    rows — merged from the normalizer + payloads report by
+    :func:`ingest_payload`. Informational only; never blocks the store.
     """
 
     outcome: str
@@ -342,6 +345,53 @@ def _upsert_hrn_lane(
     return len(events), skips
 
 
+def _upsert_sleep_session_lane(
+    conn: ConnectionType,
+    parsed: object,
+) -> tuple[int, dict[str, int]]:
+    """Sleep-session lane upserts (run 2026-09-28-mcp-analysis-parity §1):
+    one row per recognized aggregated-sleep record, latest-wins ON CONFLICT
+    (source_name, sleep_start) — the same iron-law-2 idempotency as the
+    ECG/HRN lanes. No child rows and NO ref→id indirection (no ids cache:
+    executemany over the payload rows directly, batched by the shared
+    SAMPLE_UPSERT_BATCH cap — the backfill corpus carries 2,500+ points).
+    OUT of daily_rollups (session lane, like workouts/ecg/hrn). Returns
+    ``(sessions_offered, skip_census)`` — the census carries the normalizer's
+    ``skipped.sleep_session`` drops (recognized points without a parseable
+    sleep_start / malformed durations) for the spec §5 accounting.
+    """
+    from health_db.db.helpers import UPSERT_SLEEP_SESSION
+    from health_db.normalize import _sleep_session_rows
+
+    session_rows, skips = _sleep_session_rows(parsed)
+    if not session_rows:
+        return 0, skips
+    data = [
+        (
+            row.source_name,
+            row.record_date,
+            row.sleep_start,
+            row.sleep_end,
+            row.in_bed_start,
+            row.in_bed_end,
+            row.total_sleep,
+            row.asleep,
+            row.deep,
+            row.core,
+            row.rem,
+            row.awake,
+            row.in_bed,
+        )
+        for row in session_rows
+    ]
+    with conn.cursor() as cur:
+        for offset in range(0, len(data), SAMPLE_UPSERT_BATCH):
+            cur.executemany(
+                UPSERT_SLEEP_SESSION, data[offset : offset + SAMPLE_UPSERT_BATCH]
+            )
+    return len(session_rows), skips
+
+
 def ingest_payload(
     pool: ConnectionPool,
     parsed: object,
@@ -419,13 +469,18 @@ def ingest_payload(
             ensure_partitions(conn)
             stored = _upsert_samples(conn, ids, rows)
 
-            # Lane persistence (spec §2/§3): same transaction, after samples,
-            # before raw_ingest. The lane normalizers' drop censuses fold
-            # into the same spec §5 dict (keys 'ecg'/'notification').
+            # Lane persistence (spec §2/§3 + parity §1): same transaction,
+            # after samples, before raw_ingest. The lane normalizers' drop
+            # censuses fold into the same spec §5 dict (keys
+            # 'ecg'/'notification'/'sleep_session').
             _ecg_count, ecg_skips = _upsert_ecg_lane(conn, ids, parsed)
             _hrn_count, hrn_skips = _upsert_hrn_lane(conn, ids, parsed)
+            _sleep_session_count, sleep_session_skips = _upsert_sleep_session_lane(
+                conn, parsed
+            )
             merge_skipped(skipped, ecg_skips)
             merge_skipped(skipped, hrn_skips)
+            merge_skipped(skipped, sleep_session_skips)
 
             _deleted, _inserted = recompute_rollups(conn, days)
 

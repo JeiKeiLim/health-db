@@ -36,6 +36,7 @@ module-name = "health_db"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "slice_*.py", "parse_everything*.py", "mcp_analysis_parity*.py"]
+pythonpath = ["."]
 addopts = "-q"
 markers = [
     "slice1: slice-1 ingest-validation acceptance tests",

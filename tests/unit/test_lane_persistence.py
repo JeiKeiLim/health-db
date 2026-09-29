@@ -111,6 +111,7 @@ class _FakeTxn:
         ("INSERT INTO ecg_voltages", "_ecg_voltages"),
         ("INSERT INTO heart_rate_notifications", "_hrn"),
         ("INSERT INTO heart_rate_notification_samples", "_hrn_samples"),
+        ("INSERT INTO sleep_sessions", "_sleep_sessions"),
         ("INSERT INTO daily_rollups", "_rollups"),
         ("DELETE FROM daily_rollups", "_rollups_delete"),
         ("INSERT INTO raw_ingest", "_raw_ingest"),
@@ -130,6 +131,7 @@ class _FakeTxn:
         self.hrn: dict[tuple[str, datetime], int] = {}
         self.hrn_rows: dict[int, dict[str, Any]] = {}
         self.hrn_samples: dict[tuple[int, datetime, str], tuple[float, str | None]] = {}
+        self.sleep_sessions: dict[tuple[str, datetime], dict[str, Any]] = {}
         self.rollups: list[tuple[int, str, float]] = []
         self.raw_ingest: dict[str, dict[str, Any]] = {}
         self.statements: list[tuple[str, tuple]] = []
@@ -158,6 +160,7 @@ class _FakeTxn:
             "hrn": dict(self.hrn),
             "hrn_rows": {k: dict(v) for k, v in self.hrn_rows.items()},
             "hrn_samples": dict(self.hrn_samples),
+            "sleep_sessions": {k: dict(v) for k, v in self.sleep_sessions.items()},
             "rollups": list(self.rollups),
             "raw_ingest": {k: dict(v) for k, v in self.raw_ingest.items()},
             "_next_metric": self._next_metric,
@@ -179,6 +182,7 @@ class _FakeTxn:
             self.hrn = self._snapshot["hrn"]
             self.hrn_rows = self._snapshot["hrn_rows"]
             self.hrn_samples = self._snapshot["hrn_samples"]
+            self.sleep_sessions = self._snapshot["sleep_sessions"]
             self.rollups = self._snapshot["rollups"]
             self.raw_ingest = self._snapshot["raw_ingest"]
             self._next_metric = self._snapshot["_next_metric"]
@@ -274,6 +278,29 @@ class _FakeTxn:
         hrn_id, ts, kind, value, units = params
         self.hrn_samples[(hrn_id, ts, kind)] = (value, units)
         return _FakeResult([])
+
+    def _sleep_sessions(self, probe: str, params: tuple) -> _FakeResult:
+        # UPSERT_SLEEP_SESSION mirror (job-3 SQL constant): latest-wins on
+        # the (source_name, sleep_start) natural key — 13 payload params in
+        # SleepSessionRow field order, RETURNING id (childless lane: the id
+        # is unused, the row itself is the observable).
+        key = (params[0], params[2])
+        self.sleep_sessions[key] = {
+            "source_name": params[0],
+            "record_date": params[1],
+            "sleep_start": params[2],
+            "sleep_end": params[3],
+            "in_bed_start": params[4],
+            "in_bed_end": params[5],
+            "total_sleep": params[6],
+            "asleep": params[7],
+            "deep": params[8],
+            "core": params[9],
+            "rem": params[10],
+            "awake": params[11],
+            "in_bed": params[12],
+        }
+        return _FakeResult([(len(self.sleep_sessions),)])
 
     def _rollups(self, probe: str, params: tuple) -> _FakeResult:
         return _FakeResult([])

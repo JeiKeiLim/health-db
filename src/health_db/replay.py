@@ -91,9 +91,10 @@ class ReplayReport:
 
     ``skip_accounting`` folds every ingested payload's spec-§5 drop census
     (unit_unconvertible / unrecognized_shape / ecg / notification /
-    sleep_no_value) into one run-wide object — the zero-silent-drops
-    contract made observable across a whole backfill, printed to stderr as
-    diagnostics. Informational only; never blocks replay.
+    sleep_no_value / sleep_session) into one run-wide object — the
+    zero-silent-drops contract made observable across a whole backfill,
+    printed to stderr as diagnostics. Informational only; never blocks
+    replay.
     """
 
     root: str
@@ -415,7 +416,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{CLI_PROG}: skipped-points — unit_unconvertible={accounting['unit_unconvertible']} "
         f"unrecognized_shape={accounting['unrecognized_shape']} ecg={accounting['ecg']} "
         f"notification={accounting['notification']} "
-        f"sleep_no_value={accounting['sleep_no_value']}"
+        f"sleep_no_value={accounting['sleep_no_value']} "
+        f"sleep_session={accounting['sleep_session']}"
     )
     _emit_summary(report)
     return 0
