@@ -40,7 +40,7 @@ parallels, 5 matrix shapes) and landed together with the fix:
   excluded, fields verbatim — asleep: 0 sentinel never re-derived).
 - `src/health_db/payloads.py` — `sleep_session` added to `SKIPPED_KEYS`
   (additive, once; spec §1).
-- `tests/unit/test_sleep_sessions.py` — 31 tests (new file): spec §1 real
+- `tests/unit/test_sleep_sessions.py` — 30 tests (new file): spec §1 real
   records, 5 frozen matrix shapes, recognition parity, skip census,
   parallel emission, frozen dataclass, UTC bucketing.
 - `tests/unit/test_payloads.py` / `tests/unit/test_replay.py` — frozen
