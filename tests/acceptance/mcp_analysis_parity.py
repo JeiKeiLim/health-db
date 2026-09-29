@@ -12,6 +12,7 @@ pytestmark: requires_pg — disposable postgres:18 container per conftest.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -443,21 +444,19 @@ class TestScenario8ProbeCleanup:
         names = [m["name"] for m in metrics["metrics"]]
         assert "__probe_metric" in names  # present before cleanup
 
-        # The cleanup SQL from spec §5 (runs as a deploy step; here: the SQL itself)
-        probes = ("__probe_metric", "__probe_metric2")
+        # Execute the real ops deliverable scripts/probe_cleanup.sql spec §5 verbatim
+        # (psycopg3 cannot run a multi-statement block as one prepared statement,
+        # and the ops step runs it via psql -f — the file is the source of truth).
+        sql_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "scripts"
+            / "probe_cleanup.sql"
+        )
+        assert sql_path.is_file(), f"ops script missing: {sql_path}"
         with pg.pool.connection() as conn:
-            conn.execute(
-                """
-                BEGIN;
-                DELETE FROM daily_rollups WHERE metric_id IN
-                  (SELECT metric_id FROM metric_dim WHERE name = ANY(%s));
-                DELETE FROM raw_samples   WHERE metric_id IN
-                  (SELECT metric_id FROM metric_dim WHERE name = ANY(%s));
-                DELETE FROM metric_dim    WHERE name = ANY(%s);
-                COMMIT;
-                """,
-                (list(probes), list(probes), list(probes)),
-            )
+            with conn.cursor() as cur:
+                cur.execute(sql_path.read_text(encoding="utf-8"))
+                cur.execute(sql_path.read_text(encoding="utf-8"))  # idempotent re-run
 
         metrics = queries.list_metrics(pool=pg.pool)
         names = [m["name"] for m in metrics["metrics"]]

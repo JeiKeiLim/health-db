@@ -228,6 +228,25 @@ idempotent — running it twice changes nothing the second time — and never de
 `raw_ingest` rows (the audit row is updated in place with `outcome='repaired'`). It
 reads only from the on-disk archive, so it is safe to run on a live deployment.
 
+### Probe-metric cleanup (ops, run AFTER replay)
+
+The ingest auto-registers unknown metrics, so the test-acceptance probes
+`__probe_metric`/`__probe_metric2` exist as real rows in the production DB.
+`scripts/probe_cleanup.sql` removes them from `daily_rollups`, `raw_samples`, and
+`metric_dim` in one transaction:
+
+```sh
+docker exec -i health-db psql "$DATABASE_URL" -f - < scripts/probe_cleanup.sql
+```
+
+> **⚠ Ordering — run AFTER the backfill replay** (`health-replay --dir data/archive
+> --force`, deploy sequence step 3). A full replay re-normalizes the archived
+> payloads verbatim and would resurrect the probe rows from payloads where the
+> probe metric was captured — cleanup must not precede it. The script is idempotent
+> (re-running on absent rows is a no-op). Payloads stay in the archive
+> (`raw_ingest` + disk) — purging them is a possible follow-up. Not a migration:
+> never run it under `health-migrate`.
+
 ## Post-deploy validation (post-deploy procedure)
 
 1. Day 0: backfill completes (above); `GET /api/ingest/stats` shows
