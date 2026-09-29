@@ -30,7 +30,11 @@ of per-metric ``max(day_kst)``) rounded down to a shared consensus day; a
 metric is *stale* when its last day is older than the consensus by more
 than :data:`STALENESS_TOLERANCE_DAYS` (1). The median approach tolerates
 metrics that legitimately sync at lower cadence (weekly averages, monthly
-summaries) without flagging the whole dataset stale.
+summaries) without flagging the whole dataset stale. Separately,
+``latest_activity_day`` (spec scenario 6) is the max ``last_day`` over
+:data:`ACTIVITY_DAY_METRICS` only — the activity feed's true newest day,
+independent of the median consensus that slow-syncing nutrition metrics
+legitimately pin.
 """
 
 from __future__ import annotations
@@ -74,6 +78,20 @@ OFFSET_MAX_BIGINT = 2**63 - 1
 # A metric is stale when its last day is older than the consensus day by
 # more than this many days (spec scenario 4: "median-based staleness").
 STALENESS_TOLERANCE_DAYS = 1
+
+# Metrics whose per-metric max(day_kst) defines ``latest_activity_day``
+# (run 2026-09-28-mcp-analysis-parity §3: the activity-feed marker the
+# consumer date-labels reports from while nutrition metrics legitimately
+# sit weeks behind the median consensus).
+ACTIVITY_DAY_METRICS = (
+    "sleep_analysis",
+    "heart_rate_variability",
+    "resting_heart_rate",
+    "step_count",
+    "active_energy",
+    "apple_exercise_time",
+    "walking_running_distance",
+)
 
 # Window bound for get_trends (hard cap so an agent cannot request a
 # decade-long scan; 365 days is far beyond any real analysis window).
@@ -202,6 +220,8 @@ def freshness_check(pool: ConnectionPool | None = None) -> dict[str, object]:
     ``latest_complete_day`` is the consensus day from the per-metric max days
     (median of the sorted set — see module docstring); ``stale`` lists the
     metrics lagging that consensus by more than the tolerance.
+    ``latest_activity_day`` (spec scenario 6) is the max ``last_day`` over
+    :data:`ACTIVITY_DAY_METRICS` only.
     """
     with _resolve_pool(pool).connection() as conn:
         rows = _dict_rows(
@@ -218,6 +238,7 @@ def freshness_check(pool: ConnectionPool | None = None) -> dict[str, object]:
     if not rows:
         return {
             "latest_complete_day": None,
+            "latest_activity_day": None,
             "stale": [],
             "metrics": [],
             "count": 0,
@@ -225,9 +246,13 @@ def freshness_check(pool: ConnectionPool | None = None) -> dict[str, object]:
 
     last_days: list[date] = []
     per_metric: list[dict[str, object]] = []
+    name_to_day: dict[str, date] = {}
     for row in rows:
         day = row["last_day"]
         last_days.append(day if isinstance(day, date) else day)
+        name = row["name"]
+        if isinstance(day, date):
+            name_to_day[name] = day
         per_metric.append(
             {
                 "name": row["name"],
@@ -236,6 +261,13 @@ def freshness_check(pool: ConnectionPool | None = None) -> dict[str, object]:
                 "last_day": _day(day),
             }
         )
+
+    # Activity marker (spec §3): max(last_day) over exactly the seven
+    # activity metrics; missing metrics ignored, None when none exist.
+    active_days = [
+        name_to_day[name] for name in ACTIVITY_DAY_METRICS if name in name_to_day
+    ]
+    latest_activity_day = max(active_days).isoformat() if active_days else None
 
     ordered = sorted(set(last_days))
     middle = ordered[len(ordered) // 2]
@@ -255,6 +287,7 @@ def freshness_check(pool: ConnectionPool | None = None) -> dict[str, object]:
     ]
     return {
         "latest_complete_day": consensus,
+        "latest_activity_day": latest_activity_day,
         "stale": stale,
         "metrics": per_metric,
         "count": len(per_metric),

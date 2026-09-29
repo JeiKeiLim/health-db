@@ -337,7 +337,7 @@ def build_mcp_server(pool: object | None = None):
         name="freshness_check",
         description=(
             "Per-metric latest days, consensus latest_complete_day "
-            "(median-based), stale list."
+            "(median-based), activity marker latest_activity_day, stale list."
         ),
         structured_output=True,
     )
@@ -513,7 +513,10 @@ def build_mcp_server(pool: object | None = None):
     @server.resource(
         queries.RESOURCE_FRESHNESS_URI,
         name="freshness",
-        description="Latest complete KST day + per-metric staleness (freshness_check payload).",
+        description=(
+            "Latest complete KST day + activity marker latest_activity_day "
+            "+ per-metric staleness (freshness_check payload)."
+        ),
         mime_type="application/json",
     )
     def resource_freshness() -> dict[str, object]:

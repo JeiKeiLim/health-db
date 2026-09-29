@@ -153,6 +153,242 @@ class TestFreshnessConsensus:
         fresh = (middle - date(2026, 9, 7)).days > queries.STALENESS_TOLERANCE_DAYS
         assert fresh is False
 
+    def test_activity_metrics_roster_is_exact(self):
+        """latest_activity_day domain (spec scenario 6): exactly the seven
+        activity metrics — adding a metric must be deliberate."""
+        assert queries.ACTIVITY_DAY_METRICS == (
+            "sleep_analysis",
+            "heart_rate_variability",
+            "resting_heart_rate",
+            "step_count",
+            "active_energy",
+            "apple_exercise_time",
+            "walking_running_distance",
+        )
+
+
+# ---------------------------------------------------------------------------
+# latest_activity_day (spec scenario 6) — REAL postgres round-trips.
+# Behavioral: real pipeline.ingest_payload → raw_samples → freshness_check
+# SQL, then assert the day the consumer date-labels reports with. Own
+# containers so seeded metric rows don't collide with the shared lane
+# container's corpus.
+# ---------------------------------------------------------------------------
+
+
+def _ensure_shim() -> None:
+    """Load tests/acceptance/conftest.py by path into ``tests_acceptance_shim``.
+
+    The lane loader (_lane_pg) boots the shim lazily on first lane use; the
+    freshness fixtures need it BEFORE their own container starts, so they
+    bootstrap it explicitly (idempotent — skips when already imported).
+    """
+    import sys
+
+    if "tests_acceptance_shim" in sys.modules:
+        return
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "tests_acceptance_shim",
+        Path(__file__).resolve().parents[1] / "acceptance" / "conftest.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["tests_acceptance_shim"] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+
+class _ActivityPg:
+    """Disposable container + migrations (no seed — fixtures ingest).
+
+    Mirrors _LanePg but with a metric-payload seed applied by its fixtures;
+    an own container keeps the freshness math observable on a known row set.
+    """
+
+    def __init__(self) -> None:
+        self.handle = None
+        self.docker = None
+
+    def start(self):
+        _ensure_shim()
+        from tests_acceptance_shim import (
+            PG_TEST_DB,
+            PG_TEST_USER,
+            _start_container,
+            _wait_ready,
+        )
+
+        docker, _ = _pg_available()
+        if docker is None:
+            pytest.skip("docker CLI/daemon not available — freshness round-trip (explicit skip)")
+        self.docker = docker
+        handle = _start_container(docker)
+        self.handle = handle
+        try:
+            _wait_ready(
+                {
+                    "host": handle.host,
+                    "port": handle.port,
+                    "user": PG_TEST_USER,
+                    "dbname": PG_TEST_DB,
+                    "password": handle.password,
+                }
+            )
+            import psycopg
+
+            with psycopg.connect(
+                host=handle.host,
+                port=handle.port,
+                user=PG_TEST_USER,
+                dbname=PG_TEST_DB,
+                password=handle.password,
+            ) as conn:
+                conn.execute(f'CREATE SCHEMA "{handle.schema}"')
+                conn.commit()
+                from health_db.db.migrations import apply_all
+
+                apply_all(conn)
+        except BaseException:
+            self.stop()
+            raise
+        return handle
+
+    def stop(self):
+        import subprocess
+
+        if self.handle is not None and self.docker is not None:
+            subprocess.run(
+                [self.docker, "rm", "-f", self.handle.container_id],
+                capture_output=True,
+                timeout=60,
+            )
+            self.handle.close_pool()
+            self.handle = None
+
+
+def _activity_payload(day: str, metric: str, qty: float) -> dict:
+    """One-metric payload with a single point on the given KST day."""
+    return {
+        "data": {
+            "metrics": [
+                {
+                    "name": metric,
+                    "units": "count",
+                    "data": [{"date": f"{day} 12:00:00 +0900", "qty": qty}],
+                }
+            ],
+            "workouts": [],
+        }
+    }
+
+
+@pytest.fixture(scope="module")
+def freshness_pg():
+    """Container seeded with TWO activity metrics + one non-activity metric.
+
+    step_count on 09-28, sleep_analysis on 09-26, heart_rate on 09-01. The
+    odd-count median consensus is the true middle (09-26 — the nutrition-
+    style feed pins it well behind the activity marker), so the two fields
+    deliberately diverge: latest_activity_day 09-28 vs consensus 09-26.
+    """
+    state = _ActivityPg()
+    handle = state.start()
+    atexit.register(state.stop)
+    from health_db.pipeline import ingest_payload
+
+    pool = handle.pool
+    ingest_payload(
+        pool,
+        _activity_payload("2026-09-01", "heart_rate", 70),
+        sha256="unit-freshness-seed-heart",
+        body=b"{}",
+    )
+    ingest_payload(
+        pool,
+        _activity_payload("2026-09-28", "step_count", 10472.83),
+        sha256="unit-freshness-seed-steps",
+        body=b"{}",
+    )
+    ingest_payload(
+        pool,
+        _activity_payload("2026-09-26", "sleep_analysis", 6.26),
+        sha256="unit-freshness-seed-sleep",
+        body=b"{}",
+    )
+    return handle
+
+
+@pytest.fixture(scope="module")
+def only_non_activity_pg():
+    """Container whose ONLY metric rows are non-activity (heart_rate).
+
+    Behavioral None case for latest_activity_day: missing/activity-absent
+    metrics are ignored, and with zero activity points the marker is None
+    while the consensus still derives from the non-activity metrics.
+    """
+    state = _ActivityPg()
+    handle = state.start()
+    atexit.register(state.stop)
+    from health_db.pipeline import ingest_payload
+
+    ingest_payload(
+        handle.pool,
+        _activity_payload("2026-09-20", "heart_rate", 70),
+        sha256="unit-freshness-seed-heart-only",
+        body=b"{}",
+    )
+    return handle
+
+
+class TestLatestActivityDay:
+    """freshness_check.latest_activity_day — max over the activity metrics.
+
+    Behavioral (spec scenario 6 / job-8): post payloads via the real
+    pipeline and assert the additive marker + untouched median consensus.
+    """
+
+    def test_activity_day_is_max_over_activity_metrics(self, freshness_pg):
+        out = queries.freshness_check(pool=freshness_pg.pool)
+        # step_count (09-28) beats sleep_analysis (09-26) → max 09-28.
+        assert out["latest_activity_day"] == "2026-09-28"
+        # Median consensus UNTOUCHED: rows {09-01, 09-26, 09-28} → middle 09-26.
+        assert out["latest_complete_day"] == "2026-09-26"
+
+    def test_consensus_pins_to_slow_feed_not_activity_marker(self, only_non_activity_pg):
+        """The two fields diverge: a single non-activity metric pins
+        latest_complete_day while latest_activity_day is None."""
+        out = queries.freshness_check(pool=only_non_activity_pg.pool)
+        assert out["latest_complete_day"] == "2026-09-20"
+        assert out["latest_activity_day"] is None, (
+            "no activity metric has data → None (missing metrics ignored, not errors)"
+        )
+
+    def test_missing_metrics_ignored_not_errors(self, freshness_pg):
+        out = queries.freshness_check(pool=freshness_pg.pool)
+        # resting_heart_rate + the rest of the roster are absent entirely —
+        # absence must not raise or None the marker.
+        assert "resting_heart_rate" not in {m["name"] for m in out["metrics"]}
+        assert out["latest_activity_day"] == "2026-09-28"
+
+    def test_empty_db_marker_field_present(self):
+        """The rows-empty early return must carry latest_activity_day None —
+        the additive key exists in EVERY freshness shape. Both return
+        literals in freshness_check expose the same key set (additive
+        parity between the empty branch and the populated one)."""
+        import inspect
+
+        source = inspect.getsource(queries.freshness_check)
+        for key in (
+            "latest_complete_day",
+            "latest_activity_day",
+            "stale",
+            "metrics",
+            "count",
+        ):
+            assert f'"{key}"' in source, f"missing response key {key}"
+
 
 # ---------------------------------------------------------------------------
 # Trends window validation

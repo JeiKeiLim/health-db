@@ -230,7 +230,7 @@ def run_trends(argv: list[str], *, q: object = queries, pool: object | None = No
 
 
 def run_freshness(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
-    """Per-metric latest days, consensus latest_complete_day, stale list."""
+    """Per-metric latest days, consensus latest_complete_day, latest_activity_day, stale list."""
     _arg_parser("freshness").parse_args(argv)
     result = q.freshness_check(pool=pool)  # type: ignore[attr-defined]
     emit_json(result)
