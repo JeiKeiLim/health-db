@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 
 from health_db.db import helpers as db_helpers
+from health_db.normalize import SleepSessionRow
 from health_db.pipeline import DbUnavailable, ingest_payload
 
 KST = timezone(timedelta(hours=9))
@@ -351,6 +352,18 @@ def _sha_of(doc: dict) -> str:
     return PendingStore.sha256_of(json.dumps(doc).encode("utf-8"))
 
 
+def _upsert_sleep_session_columns(sql: str) -> tuple[str, ...]:
+    """Column list of the INSERT head (source_name…in_bed), in order."""
+    column_list = sql.split("(", 1)[1].split(")")[0]
+    return tuple(name.strip() for name in column_list.split(","))
+
+
+def _dataclass_field_names(row: object) -> tuple[str, ...]:
+    import dataclasses
+
+    return tuple(field.name for field in dataclasses.fields(row))
+
+
 # ---------------------------------------------------------------------------
 # helpers SQL contract: the four new constants exist and carry the keys
 # ---------------------------------------------------------------------------
@@ -379,6 +392,34 @@ class TestLaneSqlConstants:
         sql = " ".join(db_helpers.UPSERT_HRN_SAMPLE.split())
         assert "INSERT INTO heart_rate_notification_samples" in sql
         assert "ON CONFLICT (notification_id, ts, kind) DO UPDATE" in sql
+
+    def test_upsert_sleep_session_conflicts_on_source_and_start_returning_id(self):
+        """Sleep-session lane (run 2026-09-28-mcp-analysis-parity): same
+        latest-wins pattern as the ECG/HRN lanes — UNIQUE (source_name,
+        sleep_start) natural key, RETURNING id, ingested_at refreshed on
+        update. Column order mirrors SleepSessionRow field order.
+        """
+        sql = " ".join(db_helpers.UPSERT_SLEEP_SESSION.split())
+        assert "INSERT INTO sleep_sessions" in sql
+        assert "ON CONFLICT (source_name, sleep_start) DO UPDATE" in sql
+        assert "RETURNING id" in sql
+        assert "ingested_at = now()" in sql
+        row = SleepSessionRow(
+            source_name="Source",
+            record_date=datetime(2026, 9, 28, tzinfo=KST),
+            sleep_start=datetime(2026, 9, 27, 23, 5, 35, tzinfo=KST),
+        )
+        columns = _upsert_sleep_session_columns(db_helpers.UPSERT_SLEEP_SESSION)
+        assert _dataclass_field_names(row) == columns
+
+    def test_sleep_session_upsert_is_fully_parameterized(self):
+        """13 payload columns ↔ 13 %s placeholders (day_kst is DB-generated;
+        no string interpolation — parameterized SQL iron law)."""
+        placeholder_count = db_helpers.UPSERT_SLEEP_SESSION.count("%s")
+        assert placeholder_count == 13
+        columns = _upsert_sleep_session_columns(db_helpers.UPSERT_SLEEP_SESSION)
+        assert len(columns) == placeholder_count
+        assert columns[0] == "source_name" and columns[-1] == "in_bed"
 
     def test_voltage_batch_cap_is_ten_thousand(self):
         from health_db.normalize import ECG_VOLTAGE_BATCH

@@ -142,6 +142,33 @@ ON CONFLICT (notification_id, ts, kind) DO UPDATE SET
     units = EXCLUDED.units
 """.strip()
 
+# Sleep-session lane (run 2026-09-28-mcp-analysis-parity §1): same latest-wins
+# upsert pattern as UPSERT_ECG/UPSERT_HRN on the UNIQUE (source_name, sleep_start)
+# natural key RETURNING the DB id. No child rows (executemany is fine in the
+# pipeline lane). Column order matches SleepSessionRow (normalize.py); durations
+# stay hours verbatim (iron law 3). in_bed columns follow asleep…awake in the
+# spec's field order. record_date = payload `date`, day_kst is DB-generated.
+UPSERT_SLEEP_SESSION = """
+INSERT INTO sleep_sessions (source_name, record_date, sleep_start, sleep_end,
+                            in_bed_start, in_bed_end, total_sleep, asleep,
+                            deep, core, rem, awake, in_bed)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (source_name, sleep_start) DO UPDATE SET
+    record_date = EXCLUDED.record_date,
+    sleep_end = EXCLUDED.sleep_end,
+    in_bed_start = EXCLUDED.in_bed_start,
+    in_bed_end = EXCLUDED.in_bed_end,
+    total_sleep = EXCLUDED.total_sleep,
+    asleep = EXCLUDED.asleep,
+    deep = EXCLUDED.deep,
+    core = EXCLUDED.core,
+    rem = EXCLUDED.rem,
+    awake = EXCLUDED.awake,
+    in_bed = EXCLUDED.in_bed,
+    ingested_at = now()
+RETURNING id
+""".strip()
+
 DELETE_ROLLUPS = "DELETE FROM daily_rollups WHERE day_kst = ANY(%s)"
 
 RECOMPUTE_ROLLUPS = """
