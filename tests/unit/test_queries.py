@@ -835,3 +835,191 @@ class TestLaneCliSurfacing:
             cli.COMMANDS["ecgs"] = saved
         assert rc == 1
         assert "YYYY-MM-DD" in err.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Sleep-session listing guards (job-5; run 2026-09-28-mcp-analysis-parity §1)
+# Pure validation: an InvalidParameter raise must precede any pool borrow.
+# ---------------------------------------------------------------------------
+
+
+class TestListSleepSessionsGuards:
+    """limit clamp [1,500] (default 100) + offset validation, pool-free."""
+
+    def test_non_int_limit_rejected_before_pool(self):
+        class _ExplodingPool:
+            def connection(self):  # noqa: ANN201
+                raise AssertionError("InvalidParameter must fire before the borrow")
+
+        with pytest.raises(InvalidParameter, match="limit must be an integer"):
+            queries.list_sleep_sessions(limit="10", pool=_ExplodingPool())  # type: ignore[arg-type]
+
+    def test_bool_limit_rejected_before_pool(self):
+        class _ExplodingPool:
+            def connection(self):  # noqa: ANN201
+                raise AssertionError("InvalidParameter must fire before the borrow")
+
+        with pytest.raises(InvalidParameter, match="integer"):
+            queries.list_sleep_sessions(limit=True, pool=_ExplodingPool())  # type: ignore[arg-type]
+
+    def test_non_int_offset_rejected_before_pool(self):
+        class _ExplodingPool:
+            def connection(self):  # noqa: ANN201
+                raise AssertionError("InvalidParameter must fire before the borrow")
+
+        with pytest.raises(InvalidParameter, match="offset must be an integer"):
+            queries.list_sleep_sessions(offset=1.5, pool=_ExplodingPool())  # type: ignore[arg-type]
+
+    def test_bool_offset_rejected_before_pool(self):
+        class _ExplodingPool:
+            def connection(self):  # noqa: ANN201
+                raise AssertionError("InvalidParameter must fire before the borrow")
+
+        with pytest.raises(InvalidParameter, match="offset must be an integer"):
+            queries.list_sleep_sessions(offset=False, pool=_ExplodingPool())  # type: ignore[arg-type]
+
+    def test_offset_above_bigint_ceiling_rejected_before_pool(self):
+        class _ExplodingPool:
+            def connection(self):  # noqa: ANN201
+                raise AssertionError("InvalidParameter must fire before the borrow")
+
+        with pytest.raises(InvalidParameter, match="offset must be at most"):
+            queries.list_sleep_sessions(offset=2**63, pool=_ExplodingPool())  # type: ignore[arg-type]
+
+    def test_invalid_from_day_rejected_before_pool(self):
+        class _ExplodingPool:
+            def connection(self):  # noqa: ANN201
+                raise AssertionError("InvalidParameter must fire before the borrow")
+
+        with pytest.raises(InvalidParameter, match="YYYY-MM-DD"):
+            queries.list_sleep_sessions(frm="not-a-day", pool=_ExplodingPool())  # type: ignore[arg-type]
+
+    def test_constants_match_spec(self):
+        assert queries.SLEEP_SESSION_DEFAULT_LIMIT == 100
+        assert queries.SLEEP_SESSION_MAX_LIMIT == 500
+
+
+def _sleep_session_point(day: str, hour: int, minute: int, total: float) -> dict:
+    """Aggregated-sleep record on KST ``day`` (spec §1 shape, generic sources)."""
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    kst = _dt.strptime(f"{day} {hour:02d}:{minute:02d}", "%Y-%m-%d %H:%M")
+    fmt = "%Y-%m-%d %H:%M:%S +0900"
+    return {
+        "date": f"{day} 00:00:00 +0900",
+        "source": "sleep-test-watch",
+        "sleepStart": kst.strftime(fmt),
+        "sleepEnd": (kst + _td(hours=1)).strftime(fmt),
+        "totalSleep": total,
+    }
+
+
+def _seed_sleep_corpus(pg) -> None:
+    """Ingest 4 sleep sessions through the REAL pipeline (3 one day, 1 next).
+
+    Distinct (source, sleep_start) upsert keys; newest sleep_start last so
+    ORDER BY sleep_start DESC has an unambiguous expected order.
+    """
+    from health_db.pipeline import ingest_payload
+
+    ingest_payload(
+        pg.pool,
+        {
+            "data": {
+                "metrics": [
+                    {
+                        "name": "sleep_analysis",
+                        "units": "hr",
+                        "data": [
+                            _sleep_session_point("2026-06-10", 22, 0, 7.5),
+                            _sleep_session_point("2026-06-10", 13, 30, 0.8),
+                            _sleep_session_point("2026-06-11", 21, 45, 6.2),
+                            _sleep_session_point("2026-06-12", 23, 15, 8.1),
+                        ],
+                    }
+                ],
+                "workouts": [],
+            }
+        },
+        sha256="unit-sleep-seed-0001",
+        body=b"{}",
+    )
+
+
+@pytest.fixture(scope="module")
+def sleep_pg():
+    handle = _lane_pg()
+    _seed_sleep_corpus(handle)
+    yield handle
+
+
+class TestListSleepSessionsAgainstPostgres:
+    """list_sleep_sessions round-trips: ordering, day filter, paging markers.
+
+    Behavioral contract under the SAME disposable postgres the acceptance
+    suite uses: real pipeline ingest → real SQL → query-layer response.
+    """
+
+    def test_default_limit_100_and_response_shape(self, sleep_pg):
+        out = queries.list_sleep_sessions(pool=sleep_pg.pool)
+        assert out["limit"] == 100
+        assert out["offset"] == 0
+        assert out["count"] == 4
+        assert out["next_offset"] is None, "4 rows < one page of 100 = last page"
+        assert [s["total_sleep"] for s in out["sessions"]] == [
+            8.1, 6.2, 7.5, 0.8], "ORDER BY sleep_start DESC"
+        row = out["sessions"][0]
+        assert set(row) == {
+            "id", "source", "day", "sleep_start", "sleep_end",
+            "in_bed_start", "in_bed_end", "total_sleep", "asleep",
+            "deep", "core", "rem", "awake", "in_bed",
+        }
+        assert row["day"] == "2026-06-12"
+        assert row["sleep_start"] == "2026-06-12T23:15:00+09:00"
+        assert row["sleep_end"] == "2026-06-13T00:15:00+09:00"
+        assert row["asleep"] is None
+        assert row["deep"] is None
+
+    def test_day_kst_filter_isolates_days(self, sleep_pg):
+        only_10 = queries.list_sleep_sessions(
+            frm="2026-06-10", to="2026-06-10", pool=sleep_pg.pool
+        )
+        assert only_10["count"] == 2
+        assert {s["total_sleep"] for s in only_10["sessions"]} == {7.5, 0.8}
+        empty = queries.list_sleep_sessions(
+            frm="2026-01-01", to="2026-01-02", pool=sleep_pg.pool
+        )
+        assert empty["sessions"] == []
+        assert empty["count"] == 0
+        assert empty["next_offset"] is None, "empty page is never an error"
+
+    def test_limit_clamps_and_lookahead_drives_next_offset(self, sleep_pg):
+        out = queries.list_sleep_sessions(limit=998, pool=sleep_pg.pool)
+        assert out["limit"] == 500, "over-max limit clamps to 500"
+        tiny = queries.list_sleep_sessions(limit=2, pool=sleep_pg.pool)
+        assert tiny["count"] == 2
+        assert tiny["next_offset"] == 2, "lookahead saw a 3rd row → marker"
+        page2 = queries.list_sleep_sessions(limit=2, offset=tiny["next_offset"], pool=sleep_pg.pool)
+        assert page2["count"] == 2, "rows 3-4 fill page 2 exactly"
+        assert page2["next_offset"] is None, "no 5th row → last-page marker"
+        past_end = queries.list_sleep_sessions(limit=2, offset=4, pool=sleep_pg.pool)
+        assert past_end["sessions"] == []
+        assert past_end["next_offset"] is None, "past-end: empty array + null marker"
+        zero = queries.list_sleep_sessions(limit=0, pool=sleep_pg.pool)
+        assert zero["limit"] == 1, "below-min limit clamps to 1"
+        assert zero["count"] == 1
+        assert zero["next_offset"] == 1
+
+    def test_negative_offset_clamps_to_zero(self, sleep_pg):
+        out = queries.list_sleep_sessions(offset=-3, pool=sleep_pg.pool)
+        assert out["offset"] == 0
+        assert out["count"] == 4
+
+    def test_upsert_key_carries_across_reads(self, sleep_pg):
+        """(source_name, sleep_start) UNIQUE: per-source rows stay distinct."""
+        sessions = queries.list_sleep_sessions(
+            frm="2026-06-10", to="2026-06-10", pool=sleep_pg.pool
+        )["sessions"]
+        keys = {(s["source"], s["sleep_start"]) for s in sessions}
+        assert len(keys) == 2, "distinct (source, sleep_start) — never merged"

@@ -53,6 +53,11 @@ ECG_HRN_MAX_LIMIT = 500
 VOLTAGE_DEFAULT_LIMIT = 1000
 VOLTAGE_MAX_LIMIT = 10000
 
+# Sleep-session listing bounds (run 2026-09-28-mcp-analysis-parity spec §1:
+# default 100, max 500 — same _bounded_limit family as the lane lists).
+SLEEP_SESSION_DEFAULT_LIMIT = 100
+SLEEP_SESSION_MAX_LIMIT = 500
+
 # Page-offset ceiling: the PostgreSQL OFFSET clause is a bigint, so an
 # offset above 2**63 - 1 would surface as a masked NumericValueOutOfRange
 # from the SQL layer instead of an actionable message (job-8 eval finding:
@@ -617,6 +622,18 @@ def _ts_iso(value: object) -> str | None:
     return value.isoformat() if value is not None else None  # type: ignore[attr-defined]
 
 
+def _ts_kst(value: object) -> str | None:
+    """timestamptz → ISO 8601 in the FIXED UTC+9 KST offset (iron law 4
+    family: never a named zone, never server/session-local — the acceptance
+    rows and the consumer's live dates are KST-rendered). None passes
+    through."""
+    from datetime import timedelta, timezone
+
+    if value is None:
+        return None
+    return value.astimezone(timezone(timedelta(hours=9))).isoformat()
+
+
 # ---------------------------------------------------------------------------
 # ECG sessions + heart-rate notifications (run 2026-09-17-normalizer-audit §7)
 # ---------------------------------------------------------------------------
@@ -887,6 +904,81 @@ def _validated_lane_id(value: str, exc_type: type[Exception]) -> int:
         return int(str(value))
     except (ValueError, TypeError) as exc:
         raise exc_type(str(value)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Sleep sessions (run 2026-09-28-mcp-analysis-parity §1)
+# ---------------------------------------------------------------------------
+
+
+def list_sleep_sessions(
+    frm: str = "",
+    to: str = "",
+    limit: int | None = None,
+    offset: int = 0,
+    pool: ConnectionPool | None = None,
+) -> dict[str, object]:
+    """Sleep-session rows in [from, to] KST days (inclusive), newest first.
+
+    One row per recognized aggregated-sleep record (Watch nights, AutoSleep
+    naps/dozes, in-bed-era rows) — per-source rows are never merged and no
+    nap filtering happens server-side; durations stay hours verbatim (the
+    ``asleep: 0`` Watch sentinel stores 0.0). Timestamps render in the
+    fixed KST offset (iron law 4). ``limit`` clamps to
+    ``[1, 500]`` (default 100; ``None`` selects the default); ``offset``
+    follows :func:`_validated_offset`; ``next_offset`` is ``None`` on the
+    last page so an LLM knows to stop paging (raw_samples/list_workouts
+    house convention).
+    """
+    limit = _bounded_limit(
+        limit, SLEEP_SESSION_DEFAULT_LIMIT, SLEEP_SESSION_MAX_LIMIT, "limit"
+    )
+    offset = _validated_offset(offset, "offset")
+    params: list[object] = []
+    where = _day_range_where("s", frm, to, params)
+    with _resolve_pool(pool).connection() as conn:
+        rows = _dict_rows(
+            conn,
+            f"""
+            SELECT s.id::text AS id, s.source_name, s.day_kst,
+                   s.sleep_start, s.sleep_end, s.in_bed_start, s.in_bed_end,
+                   s.total_sleep, s.asleep, s.deep, s.core, s.rem,
+                   s.awake, s.in_bed
+            FROM sleep_sessions s
+            {where}
+            ORDER BY s.sleep_start DESC
+            LIMIT %s OFFSET %s
+            """,
+            [*params, limit + 1, offset],
+        )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    sessions = [
+        {
+            "id": row["id"],
+            "source": row["source_name"],
+            "day": _day(row["day_kst"]),
+            "sleep_start": _ts_kst(row["sleep_start"]),
+            "sleep_end": _ts_kst(row["sleep_end"]),
+            "in_bed_start": _ts_kst(row["in_bed_start"]),
+            "in_bed_end": _ts_kst(row["in_bed_end"]),
+            "total_sleep": row["total_sleep"],
+            "asleep": row["asleep"],
+            "deep": row["deep"],
+            "core": row["core"],
+            "rem": row["rem"],
+            "awake": row["awake"],
+            "in_bed": row["in_bed"],
+        }
+        for row in rows
+    ]
+    return {
+        "sessions": sessions,
+        "count": len(sessions),
+        "limit": limit,
+        "offset": offset,
+        "next_offset": offset + limit if has_more else None,
+    }
 
 
 # ---------------------------------------------------------------------------
