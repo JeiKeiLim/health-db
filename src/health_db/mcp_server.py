@@ -301,13 +301,23 @@ def build_mcp_server(pool: object | None = None):
 
     @server.tool(
         name="get_workout_detail",
-        description="One workout with its heart-rate series and GPS route (ordered by timestamp).",
+        description=(
+            "One workout with its heart-rate series and a page of its GPS "
+            "route (timestamp order; route_limit default 1000 max 10000; "
+            "next_route_offset None = last page)."
+        ),
         structured_output=True,
     )
     def tool_get_workout_detail(
-        id: Annotated[str, Field(description="workout UUID (see list_workouts)")]
+        id: Annotated[str, Field(description="workout UUID (see list_workouts)")],
+        route_offset: Annotated[int, Field(description="0-based route page offset")] = 0,
+        route_limit: Annotated[
+            int, Field(description="route page size (default 1000, max 10000)")
+        ] = queries.ROUTE_DEFAULT_LIMIT,
     ) -> dict[str, object]:
-        return queries.get_workout_detail(id, pool=pool)
+        return queries.get_workout_detail(
+            id, route_offset=route_offset, route_limit=route_limit, pool=pool
+        )
 
     @server.tool(
         name="get_trends",

@@ -293,7 +293,15 @@ class TestScenario5RoutePaging:
         assert out["duration_sec"] == pytest.approx(2864.40)
         assert out["avg_heart_rate"] == pytest.approx(137.85)
         assert out["max_heart_rate"] == 152
-        assert out["active_energy_kcal"] == pytest.approx(496.74, rel=1e-3)
+        # Fixture-internal expectation: activeEnergyBurned 2078.36 kJ ÷ 4.184
+        # (KJ_PER_KCAL, iron law 3) = 496.7400 kcal. The pre-written fixture
+        # carried 496.74 (the REAL 2873-point workout e5a1b2c3's live value —
+        # live criterion 4), but its own kJ input does not divide to that;
+        # 496.74 stays the LIVE-server verification anchor, not this synthetic
+        # fixture's (job-4 journal non_blocking_notes flagged the mismatch).
+        assert out["active_energy_kcal"] == pytest.approx(
+            2078.36 / 4.184, rel=1e-9
+        )
         assert out["distance_km"] == pytest.approx(6.824)
         assert out["hr"] == []  # no hr points in fixture — field present
         assert "heart_rate_recovery" in out

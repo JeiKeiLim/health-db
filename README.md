@@ -27,7 +27,9 @@ MCP clients (Claude, …) ──streamable-http :8100/mcp──► queries.py (s
 
 ### MCP tools
 `query_day(date, metric?)` · `get_metric_series(metric, from, to)` · `list_metrics()` ·
-`list_workouts(from, to)` · `get_workout_detail(id)` · `get_trends(metric, window)` ·
+`list_workouts(from, to)` · `get_workout_detail(id, route_offset?, route_limit?)` — HR
+inline; GPS route paged (default 1000, max 10000; `route_count` + `next_route_offset`
+None = last page) · `get_trends(metric, window)` ·
 `freshness_check()` · `raw_samples(metric?, from?, to?, limit, offset)` ·
 `list_sleep_sessions(from?, to?, limit, offset)` — one row per recognized aggregated-sleep
 record (per-source rows never merged; durations in hours verbatim)
@@ -43,7 +45,7 @@ uv run health workouts --from 2026-09-01 --to 2026-09-10
 uv run health trends step_count --window 30
 uv run health freshness
 uv run health raw --metric step_count --from 2026-09-01 --to 2026-09-10 --limit 1000
-uv run health routes <workout-id>
+uv run health routes <workout-id> --offset 1000 --limit 1000
 uv run health sleep --from 2026-09-27 --to 2026-09-28 --limit 100 --offset 0
 ```
 JSON to stdout, diagnostics to stderr. Thin wrapper over the same query layer the MCP

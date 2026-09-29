@@ -97,6 +97,10 @@ class TestConstants:
         assert queries.VOLTAGE_DEFAULT_LIMIT == 1000
         assert queries.VOLTAGE_MAX_LIMIT == 10000
 
+    def test_route_limit_bounds(self):
+        assert queries.ROUTE_DEFAULT_LIMIT == 1000
+        assert queries.ROUTE_MAX_LIMIT == 10000
+
     def test_staleness_tolerance(self):
         assert queries.STALENESS_TOLERANCE_DAYS == 1
 
@@ -277,6 +281,61 @@ class TestValidatedLaneId:
 
 
 # ---------------------------------------------------------------------------
+# Route paging guards (run 2026-09-28-mcp-analysis-parity §2; mirrors the
+# get_ecg_detail voltage-page family). Pure validation: an InvalidParameter
+# raise must precede any pool borrow — an exploding pool proves it.
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingPool:
+    def connection(self):  # noqa: ANN201
+        raise AssertionError("validation guard must fire before the pool borrow")
+
+
+class TestWorkoutDetailRoutePagingGuards:
+    def test_non_int_route_limit_rejected_before_pool(self):
+        with pytest.raises(InvalidParameter, match="route_limit must be an integer"):
+            queries.get_workout_detail(
+                "some-uuid", route_limit="10", pool=_ExplodingPool()  # type: ignore[arg-type]
+            )
+
+    def test_bool_route_limit_rejected_before_pool(self):
+        with pytest.raises(InvalidParameter, match="integer"):
+            queries.get_workout_detail(
+                "some-uuid", route_limit=True, pool=_ExplodingPool()  # type: ignore[arg-type]
+            )
+
+    def test_non_int_route_offset_rejected_before_pool(self):
+        with pytest.raises(InvalidParameter, match="route_offset must be an integer"):
+            queries.get_workout_detail(
+                "some-uuid", route_offset=1.5, pool=_ExplodingPool()  # type: ignore[arg-type]
+            )
+
+    def test_bool_route_offset_rejected_before_pool(self):
+        with pytest.raises(InvalidParameter, match="integer"):
+            queries.get_workout_detail(
+                "some-uuid", route_offset=False, pool=_ExplodingPool()  # type: ignore[arg-type]
+            )
+
+    def test_route_offset_above_bigint_ceiling_rejected_before_pool(self):
+        with pytest.raises(InvalidParameter, match="route_offset must be at most"):
+            queries.get_workout_detail(
+                "some-uuid", route_offset=2**63, pool=_ExplodingPool()  # type: ignore[arg-type]
+            )
+
+    def test_negative_route_limit_not_validated_before_uuid(self):
+        """A below-min (non-type-error) limit is clamped, not rejected — the
+        clamp fires before the pool, so the exploding pool distinguishes it
+        from the InvalidParameter path only by NOT raising InvalidParameter;
+        UnknownWorkout (id validation) is the first pool-free failure after
+        the guards."""
+        with pytest.raises(UnknownWorkout):
+            queries.get_workout_detail(
+                "some-uuid", route_limit=0, pool=_ExplodingPool()  # type: ignore[arg-type]
+            )
+
+
+# ---------------------------------------------------------------------------
 # Schema resource (static; no pool)
 # ---------------------------------------------------------------------------
 
@@ -298,8 +357,15 @@ class TestSchemaResource:
             "ecg_voltages",
             "heart_rate_notifications",
             "heart_rate_notification_samples",
+            "sleep_sessions",
             "auth_log",
         ]
+
+    def test_sleep_sessions_entry_describes_lane(self):
+        schema = queries.schema_resource()
+        entry = next(t for t in schema["tables"] if t["table"] == "sleep_sessions")
+        assert "UNIQUE (source_name, sleep_start)" in entry["key"]
+        assert "rollups" in entry["key"]
 
     def test_json_ready(self):
         import json

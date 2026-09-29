@@ -75,8 +75,14 @@ class FakeQueries:
             },
         )
 
-    def get_workout_detail(self, workout_id, pool=None):  # noqa: ANN001
-        return self._record("get_workout_detail", (workout_id,), {"pool": pool})
+    def get_workout_detail(  # noqa: ANN001
+        self, workout_id, route_offset=0, route_limit=1000, pool=None
+    ):
+        return self._record(
+            "get_workout_detail",
+            (workout_id,),
+            {"route_offset": route_offset, "route_limit": route_limit, "pool": pool},
+        )
 
     def list_ecgs(self, frm="", to="", limit=50, pool=None):  # noqa: ANN001
         return self._record("list_ecgs", (frm, to), {"limit": limit, "pool": pool})
@@ -214,8 +220,43 @@ class TestHandlers:
 
     def test_routes_passes_uuid(self, fq, out):
         run_routes(["abc-123"], q=fq, pool=1)
-        assert fq.calls == [("get_workout_detail", ("abc-123",), {"pool": 1})]
+        assert fq.calls == [
+            (
+                "get_workout_detail",
+                ("abc-123",),
+                {"route_offset": 0, "route_limit": 1000, "pool": 1},
+            )
+        ]
         assert parsed_out(out)["args"] == ["abc-123"]
+
+    def test_routes_passes_paging(self, fq, out):
+        run_routes(["abc-123", "--offset", "1000", "--limit", "500"], q=fq, pool=1)
+        assert fq.calls == [
+            (
+                "get_workout_detail",
+                ("abc-123",),
+                {"route_offset": 1000, "route_limit": 500, "pool": 1},
+            )
+        ]
+
+    def test_routes_paging_defaults(self, fq, out):
+        run_routes(["abc-123"], q=fq, pool=1)
+        recorded = fq.calls[0][2]
+        assert recorded["route_offset"] == 0
+        assert recorded["route_limit"] == 1000
+
+    def test_routes_help_shows_paging_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            run_routes(["--help"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 0
+        text = capsys.readouterr().out
+        for flag in ("--offset", "--limit"):
+            assert flag in text
+
+    def test_routes_limit_must_be_int(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            run_routes(["abc-123", "--limit", "many"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 2
 
     def test_ecgs_passes_range_and_limit(self, fq, out):
         rc = cli.run_ecgs(

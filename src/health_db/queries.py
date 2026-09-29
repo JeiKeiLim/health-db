@@ -53,6 +53,11 @@ ECG_HRN_MAX_LIMIT = 500
 VOLTAGE_DEFAULT_LIMIT = 1000
 VOLTAGE_MAX_LIMIT = 10000
 
+# Route paging bounds (run 2026-09-28-mcp-analysis-parity §2: mirror
+# get_ecg_detail voltage pages — default 1000, max 10000 like raw_samples).
+ROUTE_DEFAULT_LIMIT = 1000
+ROUTE_MAX_LIMIT = 10000
+
 # Sleep-session listing bounds (run 2026-09-28-mcp-analysis-parity spec §1:
 # default 100, max 500 — same _bounded_limit family as the lane lists).
 SLEEP_SESSION_DEFAULT_LIMIT = 100
@@ -513,15 +518,27 @@ def list_workouts(
 
 def get_workout_detail(
     workout_id: str,
+    route_offset: int = 0,
+    route_limit: int | None = None,
     pool: ConnectionPool | None = None,
 ) -> dict[str, object]:
-    """One workout + its heart-rate series and route points (timestamp order).
+    """One workout + its heart-rate series and a page of route points.
 
-    Unknown UUIDs raise :class:`UnknownWorkout` (actionable: points at
-    ``list_workouts``).
+    Route points page in timestamp order (``ORDER BY ts``, the pre-paging
+    emission order unchanged): ``route_limit`` clamps to ``[1, 10000]``
+    (default 1000 — spec §2, mirroring get_ecg_detail voltage pages;
+    ``None`` selects the default); ``route_offset`` follows
+    :func:`_validated_offset`; ``next_route_offset`` is ``None`` on the
+    last page. All other fields (hr, heart_rate_recovery, weather,
+    cadence, speed, energies) stay inline unpaged. Unknown UUIDs raise
+    :class:`UnknownWorkout` (actionable: points at ``list_workouts``).
     """
     import uuid as _uuid
 
+    route_offset = _validated_offset(route_offset, "route_offset")
+    route_limit = _bounded_limit(
+        route_limit, ROUTE_DEFAULT_LIMIT, ROUTE_MAX_LIMIT, "route_limit"
+    )
     try:
         parsed = _uuid.UUID(str(workout_id))
     except (ValueError, AttributeError) as exc:
@@ -536,8 +553,10 @@ def get_workout_detail(
                    basal_energy, mets, temperature, humidity, is_indoor,
                    location, intensity, distance_km,
                    walking_running_distance_km, step_count, step_cadence,
-                   speed, avg_heart_rate, max_heart_rate, heart_rate_recovery
-            FROM workouts WHERE id = %s
+                   speed, avg_heart_rate, max_heart_rate, heart_rate_recovery,
+                   (SELECT count(*) FROM routes WHERE workout_id = w.id)
+                     AS route_count
+            FROM workouts w WHERE w.id = %s
             """,
             (canonical_id,),
         )
@@ -557,10 +576,14 @@ def get_workout_detail(
             """
             SELECT ts, latitude, longitude, course, speed, elevation,
                    h_acc, v_acc
-            FROM routes WHERE workout_id = %s ORDER BY ts
+            FROM routes WHERE workout_id = %s
+            ORDER BY ts
+            LIMIT %s OFFSET %s
             """,
-            (canonical_id,),
+            (canonical_id, route_limit + 1, route_offset),
         )
+    has_more = len(route_rows) > route_limit
+    route_rows = route_rows[:route_limit]
     detail = {
         "id": head["id"],
         "name": head["name"],
@@ -601,6 +624,10 @@ def get_workout_detail(
             }
             for row in route_rows
         ],
+        "route_count": head["route_count"],
+        "route_offset": route_offset,
+        "route_limit": route_limit,
+        "next_route_offset": route_offset + route_limit if has_more else None,
     }
     return detail
 

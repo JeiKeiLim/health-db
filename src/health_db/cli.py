@@ -125,7 +125,21 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[tuple[str, ...], dict[str, object]], ...]
         (("--limit",), {"type": int, "default": queries.RAW_DEFAULT_LIMIT}),
         (("--offset",), {"type": int, "default": 0}),
     ),
-    "routes": ((("id",), {"help": "workout UUID (see the workouts command)"}),),
+    "routes": (
+        (("id",), {"help": "workout UUID (see the workouts command)"}),
+        (
+            ("--offset",),
+            {"type": int, "default": 0, "help": "0-based route page offset"},
+        ),
+        (
+            ("--limit",),
+            {
+                "type": int,
+                "default": queries.ROUTE_DEFAULT_LIMIT,
+                "help": "route page size, max 10000 (default: 1000)",
+            },
+        ),
+    ),
     "ecgs": (
         OPT_FROM,
         OPT_TO,
@@ -239,9 +253,11 @@ def run_raw(argv: list[str], *, q: object = queries, pool: object | None = None)
 
 
 def run_routes(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
-    """One workout's GPS route points (timestamp order)."""
+    """One workout's GPS route points (paged, timestamp order)."""
     args = _arg_parser("routes").parse_args(argv)
-    result = q.get_workout_detail(args.id, pool=pool)  # type: ignore[attr-defined]
+    result = q.get_workout_detail(  # type: ignore[attr-defined]
+        args.id, route_offset=args.offset, route_limit=args.limit, pool=pool
+    )
     emit_json(result)
     return 0
 
