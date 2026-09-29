@@ -95,6 +95,15 @@ class FakeQueries:
             "list_heart_notifications", (frm, to), {"limit": limit, "pool": pool}
         )
 
+    def list_sleep_sessions(  # noqa: ANN001
+        self, frm="", to="", limit=100, offset=0, pool=None
+    ):
+        return self._record(
+            "list_sleep_sessions",
+            (frm, to),
+            {"limit": limit, "offset": offset, "pool": pool},
+        )
+
 
 @pytest.fixture()
 def fq() -> FakeQueries:
@@ -257,6 +266,37 @@ class TestHandlers:
         assert rc == 0
         assert fq.calls == [("freshness_check", (), {"pool": 1})]
 
+    def test_sleep_passes_range_and_paging(self, fq, out):
+        rc = cli.run_sleep(
+            ["--from", "2026-09-27", "--to", "2026-09-28", "--limit", "10", "--offset", "20"],
+            q=fq,
+            pool=1,
+        )
+        assert rc == 0
+        assert fq.calls == [
+            (
+                "list_sleep_sessions",
+                ("2026-09-27", "2026-09-28"),
+                {"limit": 10, "offset": 20, "pool": 1},
+            )
+        ]
+        assert parsed_out(out)["called"] == "list_sleep_sessions"
+
+    def test_sleep_defaults(self, fq, out):
+        rc = cli.run_sleep([], q=fq, pool=1)
+        assert rc == 0
+        assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 100
+        assert fq.calls[0][2]["offset"] == 0
+
+    def test_sleep_help_shows_range_and_paging_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.run_sleep(["--help"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 0
+        text = capsys.readouterr().out
+        for flag in ("--from", "--to", "--limit", "--offset"):
+            assert flag in text
+
 
 class TestHandlerUsageErrors:
     """Bad argv → argparse SystemExit(2); ``--help`` → SystemExit(0) on stdout."""
@@ -413,7 +453,8 @@ class TestEmitJson:
 class TestCommandSurface:
     def test_exactly_the_ten_spec_commands(self):
         """Slice-2's 7 commands + run 2026-09-17-normalizer-audit §7's
-        ecgs / ecg-detail / hrn (thin wrappers over the new tools)."""
+        ecgs / ecg-detail / hrn + run 2026-09-28-mcp-analysis-parity's
+        sleep (thin wrappers over the tools)."""
         assert sorted(COMMANDS) == [
             "ecg-detail",
             "ecgs",
@@ -423,6 +464,7 @@ class TestCommandSurface:
             "query-day",
             "raw",
             "routes",
+            "sleep",
             "trends",
             "workouts",
         ]

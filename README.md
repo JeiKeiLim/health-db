@@ -3,7 +3,7 @@
 Self-hosted Apple Health data platform: the **Health Auto Export (HAE)** iOS app POSTs
 JSON v2 exports to a FastAPI ingest service, which archives every payload verbatim
 (archive-first), normalizes it, and stores it in PostgreSQL. Queries are served by an
-MCP streamable-HTTP server (8 tools + 3 resources, Bearer auth) with a thin CLI wrapper
+MCP streamable-HTTP server (9 tools + 3 resources, Bearer auth) with a thin CLI wrapper
 for dev testing. Runs as a single Docker container next to any PostgreSQL 18 instance.
 
 ```
@@ -28,7 +28,9 @@ MCP clients (Claude, …) ──streamable-http :8100/mcp──► queries.py (s
 ### MCP tools
 `query_day(date, metric?)` · `get_metric_series(metric, from, to)` · `list_metrics()` ·
 `list_workouts(from, to)` · `get_workout_detail(id)` · `get_trends(metric, window)` ·
-`freshness_check()` · `raw_samples(metric?, from?, to?, limit, offset)`
+`freshness_check()` · `raw_samples(metric?, from?, to?, limit, offset)` ·
+`list_sleep_sessions(from?, to?, limit, offset)` — one row per recognized aggregated-sleep
+record (per-source rows never merged; durations in hours verbatim)
 
 ### MCP resources
 `health://metrics` (catalog) · `health://freshness` · `health://schema`
@@ -42,6 +44,7 @@ uv run health trends step_count --window 30
 uv run health freshness
 uv run health raw --metric step_count --from 2026-09-01 --to 2026-09-10 --limit 1000
 uv run health routes <workout-id>
+uv run health sleep --from 2026-09-27 --to 2026-09-28 --limit 100 --offset 0
 ```
 JSON to stdout, diagnostics to stderr. Thin wrapper over the same query layer the MCP
 tools use.

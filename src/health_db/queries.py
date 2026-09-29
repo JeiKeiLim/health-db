@@ -1148,6 +1148,17 @@ _SCHEMA_TABLES: tuple[dict[str, object], ...] = (
         "key": "PK (notification_id, ts, kind); FK → heart_rate_notifications ON DELETE CASCADE",
     },
     {
+        "table": "sleep_sessions",
+        "description": (
+            "one row per recognized aggregated-sleep record (Watch nights, "
+            "AutoSleep naps/dozes, in-bed-era; per-source rows never "
+            "merged); day_kst = KST day generated with fixed +9h; durations "
+            "are hours verbatim (asleep 0 sentinel stored, not re-derived)"
+        ),
+        "key": "PK id (identity); UNIQUE (source_name, sleep_start) — latest-wins; "
+        "out of daily_rollups",
+    },
+    {
         "table": "auth_log",
         "description": "401 audit (ts, ip, user_agent, reason — never secrets)",
         "key": "PK id (bigserial)",

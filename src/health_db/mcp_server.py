@@ -3,7 +3,8 @@
 Exposes the shared query layer (:mod:`health_db.queries`) as MCP tools +
 3 resources over **streamable-http** at ``/mcp`` (spec §MCP query surface;
 run 2026-09-17-normalizer-audit §7 adds ``list_ecgs`` / ``get_ecg_detail``
-/ ``list_heart_notifications`` to the original 8), guarded by a
+/ ``list_heart_notifications`` to the original 8; run
+2026-09-28-mcp-analysis-parity adds ``list_sleep_sessions``), guarded by a
 Bearer-token ASGI middleware (constant-time compare against
 ``config.INGEST_SECRET`` — the same shared secret the ingest endpoint uses,
 spec §Auth Flow step 3).
@@ -179,7 +180,7 @@ class BearerAuthMiddleware:
 
 
 def build_mcp_server(pool: object | None = None):
-    """Build the ``MCPServer`` with 11 tools + 3 resources registered.
+    """Build the ``MCPServer`` with 12 tools + 3 resources registered.
 
     ``pool`` is injected into every tool (the pytest ``mcp`` fixture pins a
     disposable container pool; production passes ``None`` and
@@ -429,6 +430,34 @@ def build_mcp_server(pool: object | None = None):
     ) -> dict[str, object]:
         return queries.list_heart_notifications(frm, to, limit=limit, pool=pool)
 
+    @server.tool(
+        name="list_sleep_sessions",
+        description=(
+            "Sleep-session records in an inclusive KST-day range (newest "
+            "first by sleep_start; one row per recognized aggregated-sleep "
+            "record — per-source rows never merged; durations are hours "
+            "verbatim). Paging: limit default 100 max 500; next_offset "
+            "None = last page."
+        ),
+        structured_output=True,
+    )
+    def tool_list_sleep_sessions(
+        frm: Annotated[
+            str,
+            Field(
+                validation_alias="from",
+                serialization_alias="from",
+                description="start day YYYY-MM-DD",
+            ),
+        ] = "",
+        to: Annotated[str, Field(description="end day YYYY-MM-DD")] = "",
+        limit: Annotated[
+            int, Field(description="page size (default 100, max 500)")
+        ] = queries.SLEEP_SESSION_DEFAULT_LIMIT,
+        offset: Annotated[int, Field(description="0-based page offset")] = 0,
+    ) -> dict[str, object]:
+        return queries.list_sleep_sessions(frm, to, limit=limit, offset=offset, pool=pool)
+
     # Wire the guarded bodies: replace the raw registrations with guarded
     # closures so UnknownMetric / UnknownWorkout / ValueError from the query
     # layer surface as client-visible ToolErrors (never masked). The raw
@@ -446,6 +475,7 @@ def build_mcp_server(pool: object | None = None):
         "list_ecgs",
         "get_ecg_detail",
         "list_heart_notifications",
+        "list_sleep_sessions",
     ):
         server.remove_tool(name)
     server.add_tool(guarded(tool_query_day), name="query_day")
@@ -459,6 +489,7 @@ def build_mcp_server(pool: object | None = None):
     server.add_tool(guarded(tool_list_ecgs), name="list_ecgs")
     server.add_tool(guarded(tool_get_ecg_detail), name="get_ecg_detail")
     server.add_tool(guarded(tool_list_heart_notifications), name="list_heart_notifications")
+    server.add_tool(guarded(tool_list_sleep_sessions), name="list_sleep_sessions")
 
     @server.resource(
         queries.RESOURCE_METRICS_URI,

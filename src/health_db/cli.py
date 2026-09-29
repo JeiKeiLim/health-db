@@ -3,7 +3,8 @@
 Spec §"CLI wrapper (dev testing — slice 2)": ``uv run health <command>``
 mirrors the core MCP tools (``query-day``, ``metrics``, ``workouts``,
 ``trends``, ``freshness``, ``raw``, ``routes``; run
-2026-09-17-normalizer-audit §7 adds ``ecgs``, ``ecg-detail``, ``hrn``) as a
+2026-09-17-normalizer-audit §7 adds ``ecgs``, ``ecg-detail``, ``hrn``; run
+2026-09-28-mcp-analysis-parity adds ``sleep``) as a
 *dev testing* surface —
 "not the product surface; thin shared query-layer". Accordingly this module
 contains **no SQL and no business logic**: every command funnels through
@@ -150,6 +151,19 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[tuple[str, ...], dict[str, object]], ...]
         OPT_TO,
         (("--limit",), {"type": int, "default": queries.ECG_HRN_DEFAULT_LIMIT}),
     ),
+    "sleep": (
+        OPT_FROM,
+        OPT_TO,
+        (
+            ("--limit",),
+            {
+                "type": int,
+                "default": queries.SLEEP_SESSION_DEFAULT_LIMIT,
+                "help": "page size, max 500 (default: 100)",
+            },
+        ),
+        (("--offset",), {"type": int, "default": 0, "help": "0-based page offset"}),
+    ),
 }
 
 
@@ -261,9 +275,20 @@ def run_hrn(argv: list[str], *, q: object = queries, pool: object | None = None)
     return 0
 
 
+def run_sleep(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
+    """Sleep-session records with stages over an inclusive KST-day range."""
+    args = _arg_parser("sleep").parse_args(argv)
+    result = q.list_sleep_sessions(  # type: ignore[attr-defined]
+        args.frm, args.to, limit=args.limit, offset=args.offset, pool=pool
+    )
+    emit_json(result)
+    return 0
+
+
 # Registry driving the top-level parser AND the test that pins the spec's
 # command list (query-day, metrics, workouts, trends, freshness, raw, routes,
-# + run 2026-09-17-normalizer-audit §7: ecgs, ecg-detail, hrn).
+# + run 2026-09-17-normalizer-audit §7: ecgs, ecg-detail, hrn
+# + run 2026-09-28-mcp-analysis-parity: sleep).
 COMMANDS: dict[str, object] = {
     "query-day": run_query_day,
     "metrics": run_metrics,
@@ -275,6 +300,7 @@ COMMANDS: dict[str, object] = {
     "ecgs": run_ecgs,
     "ecg-detail": run_ecg_detail,
     "hrn": run_hrn,
+    "sleep": run_sleep,
 }
 
 

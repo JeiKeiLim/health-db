@@ -141,9 +141,10 @@ def _tool_names(server) -> list[str]:
 
 
 class TestBuildMcpServer:
-    def test_registers_exactly_the_11_spec_tools(self):
+    def test_registers_exactly_the_12_spec_tools(self):
         """The original 8 tools (unchanged schemas) + run
-        2026-09-17-normalizer-audit §7's three lane tools."""
+        2026-09-17-normalizer-audit §7's three lane tools + run
+        2026-09-28-mcp-analysis-parity's sleep-session tool."""
         server = build_mcp_server(pool=_FakePool())
         names = _tool_names(server)
         assert names == [
@@ -155,10 +156,24 @@ class TestBuildMcpServer:
             "list_ecgs",
             "list_heart_notifications",
             "list_metrics",
+            "list_sleep_sessions",
             "list_workouts",
             "query_day",
             "raw_samples",
         ]
+
+    def test_sleep_sessions_tool_schema(self):
+        """The sleep tool exposes from/to aliases and paging params
+        (mirrors raw_samples schema checks)."""
+        server = build_mcp_server(pool=_FakePool())
+        tool = next(
+            t for t in server._tool_manager.list_tools()
+            if t.name == "list_sleep_sessions"
+        )
+        props = tool.parameters["properties"]
+        assert "from" in props and "to" in props
+        assert "frm" not in props
+        assert "limit" in props and "offset" in props
 
     def test_from_alias_published_in_schema(self):
         server = build_mcp_server(pool=_FakePool())
