@@ -1329,3 +1329,61 @@ class TestListSleepSessionsAgainstPostgres:
         )["sessions"]
         keys = {(s["source"], s["sleep_start"]) for s in sessions}
         assert len(keys) == 2, "distinct (source, sleep_start) — never merged"
+
+
+# ---------------------------------------------------------------------------
+# list_workouts pagination against a >1000-row corpus (job-9 TEST_BUG fix:
+# with the 240-row acceptance fixture a regression to the superseded
+# hardcoded LIMIT 1000 passes every test — 240 < 1000; 1100 rows makes it
+# observable: LIMIT 1000 truncates to count 1000, correct paging returns
+# all 1100 in a single limit=2000 page with next_offset None)
+# ---------------------------------------------------------------------------
+
+def _seed_workout_corpus(pg, n: int = 1100) -> None:
+    """Ingest ``n`` minimal workouts through the REAL pipeline.
+
+    One synthetic UUID per row; start timestamps ascend with ``i`` so
+    ORDER BY start_ts DESC has an unambiguous reverse order (id tiebreak
+    never needed for determinism here, only for equal-start stability).
+    """
+    from health_db.pipeline import ingest_payload
+
+    workouts = [
+        {
+            "id": f"00000000-0000-0000-0000-{i:012d}",
+            "name": "Walk",
+            "start": f"2018-01-01 {(i % 24):02d}:{(i % 60):02d}:00 +0900",
+            "end": f"2018-01-01 {(i % 24):02d}:{(i % 60):02d}:30 +0900",
+            "duration": 30,
+        }
+        for i in range(n)
+    ]
+    ingest_payload(
+        pg.pool,
+        {"data": {"metrics": [], "workouts": workouts}},
+        sha256="unit-workout-seed-0001",
+        body=b"{}",
+    )
+
+
+class TestListWorkoutsNoTruncationAgainstPostgres:
+    """The 'no silent truncation above 1000' property, observable in unit.
+
+    A regression to the superseded hardcoded LIMIT 1000 leaves count at
+    1000 for a 1100-row range; the real contract returns every row up to
+    the (clamped) limit in one page with next_offset None on the last.
+    """
+
+    def test_no_truncation_above_1000(self):
+        pg = _lane_pg()
+        _seed_workout_corpus(pg, 1100)
+        out = queries.list_workouts(
+            frm="2018-01-01", to="2018-12-31", limit=2000, pool=pg.pool
+        )
+        assert out["limit"] == 2000, "max limit 2000 accepted un-clamped"
+        assert out["count"] == 1100, (
+            "LIMIT 1000 regression would truncate this to 1000"
+        )
+        assert out["offset"] == 0
+        assert out["next_offset"] is None, "1100 < one page of 2000 = last page"
+        assert len(out["workouts"]) == 1100

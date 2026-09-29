@@ -531,7 +531,7 @@ def list_workouts(
                      WHERE rt.workout_id = w.id) AS route_points
             FROM workouts w
             {where}
-            ORDER BY w.start_ts DESC
+            ORDER BY w.start_ts DESC, w.id DESC
             LIMIT %s OFFSET %s
             """,
             [*params, limit + 1, offset],
