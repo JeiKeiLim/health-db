@@ -12,7 +12,6 @@ pytestmark: requires_pg — disposable postgres:18 container per conftest.
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 import pytest
 
@@ -418,60 +417,6 @@ class TestScenario7WorkoutPagination:
         assert out["workouts"] == []
         assert out["count"] == 0
         assert out["next_offset"] is None
-
-
-class TestScenario8ProbeCleanup:
-    """Probe-metric SQL removes __probe_metric/__probe_metric2 rows (ops, executed via psql)."""
-
-    def test_probe_metrics_gone_after_cleanup(self, api, pg):
-        # Ingest probe-shaped payloads (unknown metrics auto-register) — BOTH
-        # probes so each DELETE assertion below is non-vacuous.
-        payload = {
-            "data": {
-                "metrics": [
-                    {
-                        "name": "__probe_metric",
-                        "units": "count",
-                        "data": [{"date": "2026-01-09 12:00:00 +0900", "qty": 1}],
-                    },
-                    {
-                        "name": "__probe_metric2",
-                        "units": "count",
-                        "data": [
-                            {"date": "2026-01-09 12:00:00 +0900", "qty": 2},
-                            {"date": "2026-01-10 12:00:00 +0900", "qty": 3},
-                        ],
-                    },
-                ]
-            }
-        }
-        res = api.post_payload(payload)
-        assert res["outcome"] == "stored"
-        from health_db import queries
-
-        metrics = queries.list_metrics(pool=pg.pool)
-        names = [m["name"] for m in metrics["metrics"]]
-        assert "__probe_metric" in names  # present before cleanup
-        assert "__probe_metric2" in names  # present before cleanup
-
-        # Execute the real ops deliverable scripts/probe_cleanup.sql spec §5 verbatim
-        # (psycopg3 cannot run a multi-statement block as one prepared statement,
-        # and the ops step runs it via psql -f — the file is the source of truth).
-        sql_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts"
-            / "probe_cleanup.sql"
-        )
-        assert sql_path.is_file(), f"ops script missing: {sql_path}"
-        with pg.pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql_path.read_text(encoding="utf-8"))
-                cur.execute(sql_path.read_text(encoding="utf-8"))  # idempotent re-run
-
-        metrics = queries.list_metrics(pool=pg.pool)
-        names = [m["name"] for m in metrics["metrics"]]
-        assert "__probe_metric" not in names
-        assert "__probe_metric2" not in names
 
 
 class TestAntiScenarios:

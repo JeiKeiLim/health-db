@@ -228,33 +228,14 @@ idempotent — running it twice changes nothing the second time — and never de
 `raw_ingest` rows (the audit row is updated in place with `outcome='repaired'`). It
 reads only from the on-disk archive, so it is safe to run on a live deployment.
 
-### Probe-metric cleanup (ops, run AFTER replay)
+### Probe-metric cleanup (resolved 2026-10-01)
 
 The ingest auto-registers unknown metrics, so the test-acceptance probes
-`__probe_metric`/`__probe_metric2` exist as real rows in the production DB.
-`scripts/probe_cleanup.sql` removes them from `daily_rollups`, `raw_samples`, and
-`metric_dim` in one transaction:
-
-The runtime image (`python:3.12-slim-bookworm`) ships no `psql` client — run
-psql from a host that has it, connecting to the server postgres port using the
-project's `PSQL_*` env keys (same names as `src/health_db/db/pool.py`; note
-`PSQL_URL` is the postgres **host**, `PSQL_TABLE` is the database name —
-[.env.example](.env.example)):
-
-```sh
-PGPASSWORD="$PSQL_PASSWORD" psql \
-  "postgresql://${PSQL_USER}@${PSQL_URL}:${PSQL_PORT}/${PSQL_TABLE}" \
-  -v ON_ERROR_STOP=1 \
-  -f scripts/probe_cleanup.sql
-```
-
-> **⚠ Ordering — run AFTER the backfill replay** (`health-replay --dir data/archive
-> --force`, deploy sequence step 3). A full replay re-normalizes the archived
-> payloads verbatim and would resurrect the probe rows from payloads where the
-> probe metric was captured — cleanup must not precede it. The script is idempotent
-> (re-running on absent rows is a no-op). Payloads stay in the archive
-> (`raw_ingest` + disk) — purging them is a possible follow-up. Not a migration:
-> never run it under `health-migrate`.
+`__probe_metric`/`__probe_metric2` once existed as real rows in the production DB.
+They have been fully purged: samples/rollups/catalog rows deleted, and the 10 probe
+payloads removed from both the `raw_ingest` DB archive and the on-disk archive —
+the resurrection path is gone. No cleanup script exists anymore; a fresh
+`health-replay --dir data/archive --force` cannot re-emit the probes.
 
 ## Post-deploy validation (post-deploy procedure)
 
