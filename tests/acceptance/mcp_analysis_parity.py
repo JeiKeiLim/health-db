@@ -421,10 +421,11 @@ class TestScenario7WorkoutPagination:
 
 
 class TestScenario8ProbeCleanup:
-    """Probe-metric SQL removes __probe_metric rows (ops, executed via psql)."""
+    """Probe-metric SQL removes __probe_metric/__probe_metric2 rows (ops, executed via psql)."""
 
     def test_probe_metrics_gone_after_cleanup(self, api, pg):
-        # Ingest a probe-shaped payload (unknown metric auto-registers)
+        # Ingest probe-shaped payloads (unknown metrics auto-register) — BOTH
+        # probes so each DELETE assertion below is non-vacuous.
         payload = {
             "data": {
                 "metrics": [
@@ -432,7 +433,15 @@ class TestScenario8ProbeCleanup:
                         "name": "__probe_metric",
                         "units": "count",
                         "data": [{"date": "2026-01-09 12:00:00 +0900", "qty": 1}],
-                    }
+                    },
+                    {
+                        "name": "__probe_metric2",
+                        "units": "count",
+                        "data": [
+                            {"date": "2026-01-09 12:00:00 +0900", "qty": 2},
+                            {"date": "2026-01-10 12:00:00 +0900", "qty": 3},
+                        ],
+                    },
                 ]
             }
         }
@@ -443,6 +452,7 @@ class TestScenario8ProbeCleanup:
         metrics = queries.list_metrics(pool=pg.pool)
         names = [m["name"] for m in metrics["metrics"]]
         assert "__probe_metric" in names  # present before cleanup
+        assert "__probe_metric2" in names  # present before cleanup
 
         # Execute the real ops deliverable scripts/probe_cleanup.sql spec §5 verbatim
         # (psycopg3 cannot run a multi-statement block as one prepared statement,

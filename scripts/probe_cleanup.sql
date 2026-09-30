@@ -8,9 +8,12 @@
 --   2. raw_samples     (raw sample rows)
 --   3. metric_dim      (catalog entry — delete LAST, children reference it)
 --
--- Run inside the container (psql heredoc):
---   docker exec -i health-db psql "$PSQL_DATABASE_URL" -f - < scripts/probe_cleanup.sql
--- or docker compose run health-db psql ... depending on the deployment.
+-- Run from a host with a psql client (the runtime image
+-- python:3.12-slim-bookworm ships NO psql). Host is PSQL_URL, database is
+-- PSQL_TABLE (src/health_db/db/pool.py env keys), port 5432 on the server:
+--   PGPASSWORD="$PSQL_PASSWORD" psql \
+--     "postgresql://${PSQL_USER}@${PSQL_URL}:${PSQL_PORT}/${PSQL_TABLE}" \
+--     -v ON_ERROR_STOP=1 -f scripts/probe_cleanup.sql
 --
 -- ⚠ ORDERING — MUST run AFTER the backfill replay:
 --     docker exec health-db health-replay --dir data/archive --force

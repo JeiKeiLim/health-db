@@ -235,8 +235,17 @@ The ingest auto-registers unknown metrics, so the test-acceptance probes
 `scripts/probe_cleanup.sql` removes them from `daily_rollups`, `raw_samples`, and
 `metric_dim` in one transaction:
 
+The runtime image (`python:3.12-slim-bookworm`) ships no `psql` client — run
+psql from a host that has it, connecting to the server postgres port using the
+project's `PSQL_*` env keys (same names as `src/health_db/db/pool.py`; note
+`PSQL_URL` is the postgres **host**, `PSQL_TABLE` is the database name —
+[.env.example](.env.example)):
+
 ```sh
-docker exec -i health-db psql "$DATABASE_URL" -f - < scripts/probe_cleanup.sql
+PGPASSWORD="$PSQL_PASSWORD" psql \
+  "postgresql://${PSQL_USER}@${PSQL_URL}:${PSQL_PORT}/${PSQL_TABLE}" \
+  -v ON_ERROR_STOP=1 \
+  -f scripts/probe_cleanup.sql
 ```
 
 > **⚠ Ordering — run AFTER the backfill replay** (`health-replay --dir data/archive
