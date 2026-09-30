@@ -1,13 +1,13 @@
 # Tenet Status
 
-Updated: 2026-09-28T07:24:13.042Z
+Updated: 2026-09-30T04:14:56.030Z
 
 | Metric | Count |
 |--------|-------|
-| Completed | 380 / 403 |
+| Completed | 518 / 542 |
 | Running | 0 |
 | Pending | 0 |
-| Failed | 7 |
+| Failed | 8 |
 | Blocked | 0 |
 
 ## Failed
@@ -19,3 +19,4 @@ Updated: 2026-09-28T07:24:13.042Z
 - [!] interaction_e2e for 8a72f30e — 5m 29s !! opencode exited with code 1
 - [!] security_critic for 8a72f30e — 7m 14s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
 - [!] interaction_e2e for 8a72f30e (retry) — 4m 39s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
+- [!] sleep_session_fidelity_critic for 535c52da — 120m 0s !! opencode invocation timed out after 7200000ms

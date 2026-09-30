@@ -1,18 +1,29 @@
 # Job Queue
 
-Updated: 2026-09-28T07:24:13.042Z
+Updated: 2026-09-30T04:14:56.030Z
 
 - [x] Integration: parse-everything acceptance + full unit gate (e2e-1) — 11m 20s
+- [x] Integration: full parity battery (e2e-1) — 28s
 - [x] Final E2E: full gate + deployment handoff doc (e2e-2) — 10m 22s
 - [x] Migration 0002: ECG + notification tables (job-1) — 25m 56s
+- [x] Migration 0003 sleep_sessions (job-1) — 6m 40s
 - [x] Sleep value rule + in-bed split + loosened recognition (job-2) — 2m 50s
+- [x] SKIPPED_KEYS + normalizer session rows (job-2) — 22s
 - [x] Unit-conversion amendment (lb/st/degF) (job-3) — 36m 38s
+- [x] UPSERT_SLEEP_SESSION SQL constant (job-3) — 1m 25s
 - [x] Skip accounting: PayloadReport.skipped + ingest response (job-4) — 35m 46s
+- [x] Pipeline sleep-session lane wiring (job-4) — 11m 24s
 - [x] ECG lane normalizer (pure) (job-5) — 6m 45s
+- [x] queries.list_sleep_sessions read layer (job-5) — 51m 58s
 - [x] HR-notification lane normalizer (pure) (job-6) — 4m 15s
+- [x] MCP tool + CLI health sleep + schema entry (job-6) — 8m 18s
 - [x] Pipeline wiring: lane upserts in one transaction (job-7) — 26m 41s
+- [x] get_workout_detail route paging (job-7) — 45m 10s
 - [x] MCP tools + queries + CLI + schema resource (job-8) — 4m 54s
+- [x] freshness latest_activity_day (job-8) — 20m 57s
 - [x] Fixtures, census lock, docs + doctrine note (job-9) — 19m 5s
+- [x] list_workouts pagination (job-9) — 6m 15s
+- [x] Probe-cleanup runbook script (job-10) — 8m 54s
 - [x] interaction-e2e probe: job-7 lane persistence (retry rubric run) (probe-job-7) — 7m 38s
 - [x] FastAPI app + /api/ingest pipeline (slice-1-api) — 5m 42s
 - [x] Verbatim archive store (iron law) (slice-1-archive) — 7m 19s
@@ -405,3 +416,131 @@ Updated: 2026-09-28T07:24:13.042Z
 - [x] eval-mukx25rj — 56s
 - [x] eval-mukx4vg2 — 15s
 - [x] eval-mukx82yo — 44s
+- [x] code_critic for 86202ea1 — 14m 6s
+- [x] test_critic for 86202ea1 — 3m 58s
+- [x] interaction_e2e for 86202ea1 — 10m 14s
+- [x] security_critic for 86202ea1 — 1m 10s
+- [x] data_integrity_critic for 86202ea1 — 2m 34s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 12m 14s
+- [x] code_critic for 86202ea1 — 1m 13s
+- [x] test_critic for 86202ea1 — 1m 45s
+- [x] interaction_e2e for 86202ea1 — 1m 37s
+- [x] security_critic for 86202ea1 — 26s
+- [x] data_integrity_critic for 86202ea1 — 59s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 59s
+- [x] code_critic for 86202ea1 — 49s
+- [x] test_critic for 86202ea1 — 26s
+- [x] interaction_e2e for 86202ea1 — 1m 13s
+- [x] security_critic for 86202ea1 — 41s
+- [x] data_integrity_critic for 86202ea1 — 23s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 1m 42s
+- [x] code_critic for 86202ea1 — 3m 25s
+- [x] test_critic for 86202ea1 — 1m 36s
+- [x] interaction_e2e for 86202ea1 — 2m 24s
+- [x] security_critic for 86202ea1 — 1m 11s
+- [x] data_integrity_critic for 86202ea1 — 1m 0s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 1m 15s
+- [x] code_critic for 642b50a9 — 19m 21s
+- [x] test_critic for 642b50a9 — 5m 12s
+- [x] interaction_e2e for 642b50a9 — 7m 11s
+- [x] security_critic for 642b50a9 — 57m 2s
+- [x] data_integrity_critic for 642b50a9 — 17m 56s
+- [x] sleep_session_fidelity_critic for 642b50a9 — 14m 45s
+- [x] data-integrity slice 1: idempotency+upsert identity (scopes to job-2 diff) — 23s
+- [x] data-integrity slice 2: day-semantic+skip accounting (scopes to job-2 diff) — 25s
+- [x] code_critic for 642b50a9 — 14m 49s
+- [x] test_critic for 642b50a9 — 1m 12s
+- [x] interaction_e2e for 642b50a9 — 6m 7s
+- [x] security_critic for 642b50a9 — 1m 46s
+- [x] data_integrity_critic for 642b50a9 — 2m 53s
+- [x] sleep_session_fidelity_critic for 642b50a9 — 1m 18s
+- [x] code_critic for 642b50a9 — 20s
+- [x] test_critic for 642b50a9 — 17s
+- [x] interaction_e2e for 642b50a9 — 7m 51s
+- [x] security_critic for 642b50a9 — 22s
+- [x] data_integrity_critic for 642b50a9 — 43s
+- [x] sleep_session_fidelity_critic for 642b50a9 — 19s
+- [x] code_critic for ad6604a9 — 4m 14s
+- [x] test_critic for ad6604a9 — 5m 59s
+- [x] interaction_e2e for ad6604a9 — 7m 3s
+- [x] security_critic for ad6604a9 — 7m 30s
+- [x] data_integrity_critic for ad6604a9 — 8m 58s
+- [x] sleep_session_fidelity_critic for ad6604a9 — 5m 28s
+- [x] code_critic for ad6604a9 — 1m 16s
+- [x] test_critic for ad6604a9 — 1m 17s
+- [x] interaction_e2e for ad6604a9 — 25m 1s
+- [x] security_critic for ad6604a9 — 51s
+- [x] data_integrity_critic for ad6604a9 — 1m 10s
+- [x] sleep_session_fidelity_critic for ad6604a9 — 1m 3s
+- [x] code_critic for 77c1e374 — 7m 38s
+- [x] test_critic for 77c1e374 — 36m 17s
+- [x] interaction_e2e for 77c1e374 — 9m 46s
+- [x] security_critic for 77c1e374 — 23m 34s
+- [x] data_integrity_critic for 77c1e374 — 29m 35s
+- [x] sleep_session_fidelity_critic for 77c1e374 — 24m 56s
+- [x] code_critic for 77c1e374 — 32s
+- [x] test_critic for 77c1e374 — 19m 41s
+- [x] interaction_e2e for 77c1e374 — 33m 3s
+- [x] security_critic for 77c1e374 — 26m 15s
+- [x] data_integrity_critic for 77c1e374 — 14m 29s
+- [x] sleep_session_fidelity_critic for 77c1e374 — 50s
+- [x] code_critic for 535c52da — 18m 49s
+- [x] test_critic for 535c52da — 10m 19s
+- [x] interaction_e2e for 535c52da — 12m 19s
+- [x] security_critic for 535c52da — 30m 32s
+- [x] data_integrity_critic for 535c52da — 11m 44s
+- [!] sleep_session_fidelity_critic for 535c52da — 120m 0s !! opencode invocation timed out after 7200000ms
+- [x] sleep-fidelity slice A: row mapping + recognition parity (job-5) — 23s
+- [x] sleep-fidelity slice B: acceptance scenario coverage (job-5) — 1m 55s
+- [x] code_critic for 2170538e — 7m 16s
+- [x] test_critic for 2170538e — 21m 27s
+- [x] interaction_e2e for 2170538e — 24m 18s
+- [x] security_critic for 2170538e — 19m 46s
+- [x] data_integrity_critic for 2170538e — 7m 43s
+- [x] sleep_session_fidelity_critic for 2170538e — 67m 40s
+- [x] e2e slice: bounded live-surface probes (job-6) — 7m 9s
+- [x] code_critic for e10dd304 — 27m 1s
+- [x] test_critic for e10dd304 — 6m 36s
+- [x] interaction_e2e for e10dd304 — 9m 38s
+- [x] security_critic for e10dd304 — 12m 27s
+- [x] data_integrity_critic for e10dd304 — 15m 35s
+- [x] sleep_session_fidelity_critic for e10dd304 — 3m 50s
+- [x] code_critic for 7dfac2b6 — 11m 25s
+- [x] test_critic for 7dfac2b6 — 14m 47s
+- [x] interaction_e2e for 7dfac2b6 — 6m 43s
+- [x] security_critic for 7dfac2b6 — 9m 31s
+- [x] data_integrity_critic for 7dfac2b6 — 14m 1s
+- [x] sleep_session_fidelity_critic for 7dfac2b6 — 42s
+- [x] code_critic for 581b2fbb — 3m 28s
+- [x] test_critic for 581b2fbb — 5m 0s
+- [x] interaction_e2e for 581b2fbb — 1m 2s
+- [x] security_critic for 581b2fbb — 2m 15s
+- [x] data_integrity_critic for 581b2fbb — 37s
+- [x] sleep_session_fidelity_critic for 581b2fbb — 2m 54s
+- [x] e2e slice A: MCP-tool probe (job-9) — 1m 9s
+- [x] e2e slice B: CLI probe (job-9) — 16s
+- [x] code_critic for 581b2fbb — 23s
+- [x] test_critic for 581b2fbb — 33s
+- [x] interaction_e2e for 581b2fbb — 12m 19s
+- [x] security_critic for 581b2fbb — 2m 30s
+- [x] data_integrity_critic for 581b2fbb — 22s
+- [x] sleep_session_fidelity_critic for 581b2fbb — 13m 41s
+- [x] e2e slice: CLI + fresh-server MCP probe (job-9, rerun) — 1m 1s
+- [x] code_critic for 8ed70b09 — 10m 31s
+- [x] test_critic for 8ed70b09 — 10m 37s
+- [x] interaction_e2e for 8ed70b09 — 8m 40s
+- [x] security_critic for 8ed70b09 — 7m 1s
+- [x] data_integrity_critic for 8ed70b09 — 7m 22s
+- [x] sleep_session_fidelity_critic for 8ed70b09 — 4m 47s
+- [x] code_critic for 8ed70b09 — 5m 18s
+- [x] test_critic for 8ed70b09 — 9m 29s
+- [x] interaction_e2e for 8ed70b09 — 5m 51s
+- [x] security_critic for 8ed70b09 — 5m 32s
+- [x] data_integrity_critic for 8ed70b09 — 5m 29s
+- [x] sleep_session_fidelity_critic for 8ed70b09 — 4m 17s
+- [x] code_critic for fdc9839c — 27s
+- [x] test_critic for fdc9839c — 11m 5s
+- [x] interaction_e2e for fdc9839c — 14s
+- [x] security_critic for fdc9839c — 31m 20s
+- [x] data_integrity_critic for fdc9839c — 12m 36s
+- [x] sleep_session_fidelity_critic for fdc9839c — 30m 29s

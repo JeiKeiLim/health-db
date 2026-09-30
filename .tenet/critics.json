@@ -36,15 +36,6 @@
       "job_type": "critic_eval",
       "prompt_file": ".tenet/critics/data-integrity.md",
       "full_context": true
-    },
-    {
-      "id": "sleep-session-fidelity",
-      "builtin": false,
-      "enabled": true,
-      "stage": "sleep_session_fidelity_critic",
-      "job_type": "critic_eval",
-      "prompt_file": ".tenet/runs/2026-09-28-mcp-analysis-parity/critics/sleep-session-fidelity.md",
-      "full_context": true
     }
   ]
 }
