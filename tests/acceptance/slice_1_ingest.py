@@ -22,7 +22,9 @@ import pytest
 pytestmark = pytest.mark.slice1
 
 # The stored-outcome response contract (spec §API Endpoints): exactly these
-# 8 keys, every one asserted in the acceptance tests below.
+# 9 keys, every one asserted in the acceptance tests below. ``skipped`` was
+# added by run 2026-09-17-normalizer-audit §5 (job-4): the visible-skip
+# accounting object (frozen keys, always present).
 STORED_RESPONSE_KEYS = {
     "outcome",
     "data_type",
@@ -30,8 +32,22 @@ STORED_RESPONSE_KEYS = {
     "samples",
     "workouts",
     "unknown_formats",
+    "skipped",
     "archive_path",
     "sha256",
+}
+
+# Spec §5 skip-accounting keys (frozen set; the response object always
+# carries every key, defaulting to 0). ``sleep_session`` added additively
+# by mcp-analysis-parity §1 (sleep-shaped points lacking a parseable
+# sleep_start in the parallel sessions lane).
+SKIPPED_ACCOUNTING_KEYS = {
+    "unit_unconvertible",
+    "unrecognized_shape",
+    "ecg",
+    "notification",
+    "sleep_no_value",
+    "sleep_session",
 }
 
 # ---------------------------------------------------------------------------
@@ -58,7 +74,9 @@ def make_metrics_payload(automation: str = "metrics-all") -> dict:
                         {"date": "2026-09-08 09:00:00 +0900", "Min": 65, "Avg": 72, "Max": 85},
                     ],
                 },
-                {  # sleep_analysis aggregated shape, no qty
+                {  # sleep_analysis aggregated shape, no qty (no inBed key:
+                    # run 2026-09-17-normalizer-audit inBed>0 would split a
+                    # sleep_in_bed row and break the samples==4 count)
                     "name": "sleep_analysis",
                     "units": "hr",
                     "data": [
@@ -123,9 +141,9 @@ def sha(b: bytes) -> str:
 
 
 def assert_stored_shape(out: dict) -> None:
-    """Assert the full 8-key stored-response contract (no missing, no extra)."""
+    """Assert the full 9-key stored-response contract (no missing, no extra)."""
     assert set(out) == STORED_RESPONSE_KEYS, (
-        f"stored response must carry exactly the 8 contract keys; got {sorted(out)}"
+        f"stored response must carry exactly the 9 contract keys; got {sorted(out)}"
     )
     assert out["outcome"] == "stored"
     assert isinstance(out["data_type"], str) and out["data_type"] in {"metrics", "workouts"}
@@ -135,6 +153,10 @@ def assert_stored_shape(out: dict) -> None:
     assert isinstance(out["unknown_formats"], list)
     for entry in out["unknown_formats"]:
         assert set(entry) == {"name", "units", "reason"}
+    assert set(out["skipped"]) == SKIPPED_ACCOUNTING_KEYS, (
+        "skipped accounting must always be present with the frozen spec §5 keys"
+    )
+    assert all(isinstance(v, int) and v >= 0 for v in out["skipped"].values())
     assert out["archive_path"], "must report the on-disk archive path"
     assert Path(out["archive_path"]).is_file(), "reported archive_path must exist on disk"
     assert isinstance(out["sha256"], str) and len(out["sha256"]) == 64
@@ -177,6 +199,7 @@ class TestAcceptsAndArchives:
         assert out["samples"] == 4  # 2+1+1 data points
         assert out["workouts"] == 0
         assert out["unknown_formats"] == []
+        assert out["skipped"] == dict.fromkeys(SKIPPED_ACCOUNTING_KEYS, 0)
         assert out["sha256"] == sha(b)
 
     def test_valid_workout_payload_200_stored(self, client):
@@ -190,6 +213,7 @@ class TestAcceptsAndArchives:
         assert out["samples"] == 0
         assert out["workouts"] == 1
         assert out["unknown_formats"] == []
+        assert out["skipped"] == dict.fromkeys(SKIPPED_ACCOUNTING_KEYS, 0)
         assert out["sha256"] == sha(b)
 
     def test_payload_archived_verbatim_on_disk(self, client, tmp_path):

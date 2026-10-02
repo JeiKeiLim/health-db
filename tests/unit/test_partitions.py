@@ -115,31 +115,71 @@ class TestEnsurePartitions:
 
 
 class TestEnsureBackfillRange:
-    def test_single_month(self):
+    def test_single_month_with_kst_margin(self):
+        """KST-day ranges carry a one-month margin on each side: the raw
+        ``ts`` partition key is UTC while the range is in KST days, so
+        boundary rows (KST 2018-04-01 00:00 = 2018-03-31 15:00Z) must
+        find a partition (regression: the full-history backfill's first row
+        hit a missing p2018_03 partition)."""
         conn = FakeConn()
         ensured = parts.ensure_backfill_range(
             conn, first_day=date(2024, 5, 3), last_day=date(2024, 5, 20)
         )
-        assert ensured == ["raw_samples_p2024_05"]
+        assert ensured == [
+            "raw_samples_p2024_04",
+            "raw_samples_p2024_05",
+            "raw_samples_p2024_06",
+        ]
 
-    def test_multi_month_chronological(self):
+    def test_multi_month_chronological_with_margin(self):
         conn = FakeConn()
         ensured = parts.ensure_backfill_range(
             conn, first_day=date(2024, 11, 5), last_day=date(2025, 2, 10)
         )
         assert ensured == [
+            "raw_samples_p2024_10",
             "raw_samples_p2024_11",
             "raw_samples_p2024_12",
             "raw_samples_p2025_01",
             "raw_samples_p2025_02",
+            "raw_samples_p2025_03",
         ]
 
-    def test_year_boundary_span(self):
+    def test_year_boundary_span_with_margin(self):
         conn = FakeConn()
         ensured = parts.ensure_backfill_range(
             conn, first_day=date(2023, 12, 1), last_day=date(2024, 1, 31)
         )
-        assert ensured == ["raw_samples_p2023_12", "raw_samples_p2024_01"]
+        assert ensured == [
+            "raw_samples_p2023_11",
+            "raw_samples_p2023_12",
+            "raw_samples_p2024_01",
+            "raw_samples_p2024_02",
+        ]
+
+    def test_year_boundary_in_first_month_margin(self):
+        """January margin crosses the year back into December."""
+        conn = FakeConn()
+        ensured = parts.ensure_backfill_range(
+            conn, first_day=date(2024, 1, 1), last_day=date(2024, 1, 31)
+        )
+        assert ensured == [
+            "raw_samples_p2023_12",
+            "raw_samples_p2024_01",
+            "raw_samples_p2024_02",
+        ]
+
+    def test_december_end_margin_crosses_year(self):
+        """December end margin crosses the year forward into January."""
+        conn = FakeConn()
+        ensured = parts.ensure_backfill_range(
+            conn, first_day=date(2023, 12, 5), last_day=date(2023, 12, 31)
+        )
+        assert ensured == [
+            "raw_samples_p2023_11",
+            "raw_samples_p2023_12",
+            "raw_samples_p2024_01",
+        ]
 
     def test_empty_when_range_inverted(self):
         conn = FakeConn()
@@ -149,9 +189,15 @@ class TestEnsureBackfillRange:
         assert ensured == []
         assert conn.executed == []
 
-    def test_endpoints_included(self):
+    def test_endpoints_included_with_margin(self):
         conn = FakeConn()
         ensured = parts.ensure_backfill_range(
             conn, first_day=date(2024, 1, 1), last_day=date(2024, 3, 31)
         )
-        assert ensured == ["raw_samples_p2024_01", "raw_samples_p2024_02", "raw_samples_p2024_03"]
+        assert ensured == [
+            "raw_samples_p2023_12",
+            "raw_samples_p2024_01",
+            "raw_samples_p2024_02",
+            "raw_samples_p2024_03",
+            "raw_samples_p2024_04",
+        ]

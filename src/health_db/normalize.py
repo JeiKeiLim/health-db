@@ -11,16 +11,28 @@ Policies (ported from predecessor; iron laws 4/5):
 
 - Canonical units (predecessor ``constants.py:104-119``, re-keyed to
   the snake_case metric names stored in ``metric_dim``): a sample whose
-  declared unit does not match its metric's canonical unit is SKIPPED,
-  never converted. The single exception is energy kJ→kcal ÷ 4.184.
+  declared unit does not match its metric's canonical unit is CONVERTED
+  when an exact factor exists (run 2026-09-17-normalizer-audit §4 — the
+  user-approved iron-law-4 amendment): lb→kg ÷ 2.20462, st→kg ÷ 0.157473,
+  °F→°C (°F−32)×5/9 for ``apple_sleeping_wrist_temperature``, and the
+  pre-existing kJ→kcal ÷ 4.184. Converted rows store the canonical unit
+  string. Units with no exact factor are still SKIPPED — but counted as
+  ``unit_unconvertible`` (spec §5 skip accounting), never silent and
+  never stored next to canonical rows.
 - Metrics absent from the canonical map are pass-through: any declared
   unit is accepted, and ``is_cumulative`` seeds as
   ``unit in CUMULATIVE_UNITS`` (predecessor ``constants.py`` parity).
 - Special shapes: heart_rate → qty = ``Avg``; blood_pressure → two rows
   (``blood_pressure_systolic`` / ``blood_pressure_diastolic``);
-  sleep_analysis aggregated → one row per day, qty = ``asleep`` when
-  present else ``core+deep+rem`` (AutoSleep-wins parity with TASK-005);
-  sleep_analysis unaggregated → one row per segment.
+  sleep_analysis aggregated → one row per day, value precedence
+  ``totalSleep>0`` → ``asleep>0`` → ``core+deep+rem`` → inBed>0 → a
+  ``sleep_in_bed`` row → skip (run 2026-09-17-normalizer-audit: the REST
+  Watch sentinel is ``asleep: 0`` on 1,150/1,200 backfill nights while
+  49/50 mixed-stage nights carry a REAL asleep stage with
+  ``totalSleep = core+deep+rem+asleep`` exactly, so ``totalSleep`` has
+  absolute precedence and ``asleep: 0`` is never a value — see run
+  research/predecessor-inventory.md); sleep_analysis unaggregated → one
+  row per segment.
 - ``day_kst`` uses a FIXED UTC+9 offset (KST has no DST) — never a named
   timezone, never server-local time.
 
@@ -48,15 +60,46 @@ Workout field shapes (HAE v2 real payloads vs simplified fixtures):
   ``int(round(Avg))`` with a ``bpm`` fallback.
 - ``heartRateRecovery`` is a real point LIST, kept verbatim as a JSON array
   in the ``heart_rate_recovery`` jsonb column.
+
+Session lane (run 2026-09-17-normalizer-audit §2): ``data.ecg`` → ``ecgs`` +
+``ecg_voltages`` (:func:`_ecg_rows`; session rows like workouts — OUT of
+``raw_samples``/``daily_rollups``). Voltage timestamps are UNIX EPOCH
+SECONDS (``datetime.fromtimestamp(..., tz=UTC)`` — verified 42/42 real
+backfill sessions: first voltage == session start ±2s under this reading;
+CF-absolute would yield year-2056 values, and the predecessor CF epoch
+applies only to the retired .hae lane, never REST ECG). Dropped sessions and
+dropped voltage samples are COUNTED (``ecg`` skip-reason, spec §5), never
+silent.
+
+Notification lane (run 2026-09-17-normalizer-audit §3):
+``data.heartRateNotifications`` → ``heart_rate_notifications`` +
+``heart_rate_notification_samples`` (:func:`_hrn_rows`; session rows like
+workouts — OUT of ``raw_samples``/``daily_rollups``). Event start/end are
+ISO-8601 Z strings (:func:`_parse_ts`); each sample's timestamp is its
+``timestamp.start``. Value/unit keys are pinned from the real backfill
+corpus: HR reads ``heartRate``/``hrUnits``, HRV reads ``hrv``/``units``;
+sample ``kind`` is ``'hr'`` vs ``'hrv'`` (a single ts may carry both, so
+kind joins the samples PK, spec §6). Dropped events and dropped samples
+are COUNTED (``notification`` skip-reason, spec §5), never silent.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
+from math import isfinite
 
 KJ_PER_KCAL = 4.184
+
+# Exact conversion factors (run 2026-09-17-normalizer-audit §4 — iron-law-4
+# amendment, user-approved): canonical-unit metrics declaring one of these
+# units are CONVERTED to the canonical unit, never skipped. Factors are
+# exact by definition (1 lb = 0.45359237 kg, 1 st = 6.35029318 kg; °F→°C is
+# the exact linear scale transform). kJ→kcal ÷ KJ_PER_KCAL predates the
+# amendment and is unchanged.
+LB_PER_KG = 2.20462
+ST_PER_KG = 0.157473
 
 # Canonical unit per metric (predecessor constants.py:104-119, keyed by
 # the snake_case REST names stored in metric_dim). Metrics not listed here
@@ -78,9 +121,15 @@ CANONICAL_UNITS: dict[str, str] = {
     "apple_sleeping_wrist_temperature": "degC",
 }
 
-# Energy metrics whose canonical unit is kcal — the only metrics ever
-# converted (kJ → kcal ÷ 4.184). Non-kJ, non-kcal declarations are skipped.
+# Energy metrics whose canonical unit is kcal — converted from kJ
+# (kJ → kcal ÷ 4.184). Non-kJ, non-kcal declarations are skipped.
 ENERGY_METRICS = frozenset({"active_energy", "basal_energy_burned", "dietary_energy"})
+
+# Skip-reason key (run spec §5): a canonical-unit metric declared in a unit
+# with NO exact conversion factor is dropped, and the drop is VISIBLE —
+# counted here, surfaced by job-4's PayloadReport.skipped ingest-response
+# accounting. Zero silent drops: every such sample increments this counter.
+UNIT_UNCONVERTIBLE = "unit_unconvertible"
 
 # Cumulative units (predecessor constants.py parity): metrics whose
 # canonical/declared unit is in this set aggregate with SUM in trends;
@@ -92,6 +141,29 @@ BLOOD_PRESSURE_SYSTOLIC = "blood_pressure_systolic"
 BLOOD_PRESSURE_DIASTOLIC = "blood_pressure_diastolic"
 BP_DISPLAY_SYSTOLIC = "Blood Pressure Systolic"
 BP_DISPLAY_DIASTOLIC = "Blood Pressure Diastolic"
+
+# In-bed sleep metric (run 2026-09-17-normalizer-audit): in-bed hours with no
+# stage data (2018-era 시계/iPhone rows, 520/2,500 backfill rows) land here
+# instead of polluting sleep_analysis with zero rows. Plain pass-through
+# metric — deliberately NOT in CANONICAL_UNITS.
+SLEEP_IN_BED = "sleep_in_bed"
+SLEEP_IN_BED_DISPLAY = "Sleep In-Bed"
+
+# Skip reason for sleep-shaped points that carry no sleep value at all
+# (every field 0/absent and inBed 0/absent). Counted by job-4's
+# `skipped.sleep_no_value` ingest-response accounting (run spec §5) — the
+# zero-silent-drops contract. Never counted as `unrecognized_shape`: the
+# shape IS recognized; the point simply carries no value.
+SLEEP_NO_VALUE = "sleep_no_value"
+
+# Sleep-field key sets (run 2026-09-17-normalizer-audit §1): a point is
+# sleep-shaped when it carries `date` plus ANY sleep field. totalSleep is no
+# longer required — the archive corpus contains {date, asleep, core, deep,
+# rem} rows without it (scenario 9). sleepStart alone (no values) is also a
+# recognized sleep shape; it yields no row and counts as sleep_no_value.
+_SLEEP_FIELD_KEYS = frozenset(
+    {"totalSleep", "asleep", "core", "deep", "rem", "inBed", "sleepStart"}
+)
 
 # Human-readable display names (predecessor constants.py:21-102 port;
 # snake_case → CamelCase). Extended with the blood-pressure splits.
@@ -153,6 +225,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "selenium": "Selenium",
     "six_minute_walking_test_distance": "Six-Minute Walking Test Distance",
     "sleep_analysis": "Sleep Analysis",
+    "sleep_in_bed": "Sleep In-Bed",
     "sodium": "Sodium",
     "stair_speed_down": "Stair Speed: Down",
     "stair_speed_up": "Stair Speed: Up",
@@ -274,6 +347,141 @@ class RouteRow:
     v_acc: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class EcgRow:
+    """One ``ecgs`` row (upsert key = (source_name, start_ts), UNIQUE).
+
+    ``ref`` is the session's index within ``data.ecg`` (the stable
+    array-position reference linking this row to its voltage rows) —
+    job-7's pipeline resolves it to the DB ``id`` after the session upsert.
+    ``voltage_count`` is the number of voltage points the session declared
+    via ``numberOfVoltageMeasurements`` (NOT the parsed array length: the
+    real corpus keeps them equal, and the pipeline must detect any drift
+    rather than silently re-counting).
+    """
+
+    ref: int
+    source_name: str
+    start_ts: datetime
+    end_ts: datetime
+    classification: str | None = None
+    sampling_frequency: int | None = None
+    average_heart_rate: int | None = None
+    voltage_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class EcgVoltageRow:
+    """One ``ecg_voltages`` row (PK (ecg_id, seq); ``ecg_id`` = parent ``ref``).
+
+    ``ts`` is UNIX-epoch converted (see module docstring — verified 42/42
+    against the backfill corpus); ``voltage`` stays mcV pass-through; ``seq``
+    is the index in the payload's ``voltageMeasurements`` array.
+    """
+
+    ecg_ref: int
+    seq: int
+    ts: datetime
+    voltage: float
+    units: str
+
+
+@dataclass(frozen=True, slots=True)
+class HrnRow:
+    """One ``heart_rate_notifications`` row (upsert key = (source_name,
+    start_ts), UNIQUE).
+
+    ``ref`` is the event's index within ``data.heartRateNotifications``
+    (the stable array-position reference linking this row to its sample
+    rows) — job-7's pipeline resolves it to the DB ``id`` after the event
+    upsert. ``kind`` is the raw ``heartNotification`` string (real corpus:
+    ``high_heart_rate_notification``); ``threshold`` is the nullable bpm
+    trigger (spec §6: nullable column).
+    """
+
+    ref: int
+    source_name: str
+    start_ts: datetime
+    end_ts: datetime
+    kind: str
+    threshold: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HrnSampleRow:
+    """One ``heart_rate_notification_samples`` row (PK (notification_id, ts,
+    kind); ``notification_id`` = parent ``ref``).
+
+    ``kind`` is ``'hr'`` or ``'hrv'`` — a single ts may carry both kinds
+    (spec §6), so kind joins the PK. Value/unit keys are pinned from the
+    real corpus: HR ``heartRate``/``hrUnits``, HRV ``hrv``/``units``; ``ts``
+    is the sample's ``timestamp.start``.
+    """
+
+    hrn_ref: int
+    ts: datetime
+    kind: str
+    value: float
+    units: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SleepSessionRow:
+    """One ``sleep_sessions`` row (upsert key = (source_name, sleep_start),
+    UNIQUE; run 2026-09-28-mcp-analysis-parity spec §1).
+
+    One row per recognized aggregated-sleep record — every payload point the
+    existing branch yields a ``sleep_analysis`` or ``sleep_in_bed`` row for
+    (Watch nights, AutoSleep naps/dozes, in-bed-era rows). Per-source rows
+    are NEVER merged and no nap filtering happens server-side (the consumer
+    applies its own 16:00–18:59 exclusion). ALL fields are payload truth
+    VERBATIM (durations in hours): the ``asleep: 0`` Watch sentinel (1,150 /
+    1,200 backfill nights) stores 0.0, mixed-stage nights store their real
+    ``asleep`` — no re-derivation, no zero-filling in either direction.
+    Durations come from ``_num``; timestamps from ``_parse_ts``.
+    """
+
+    source_name: str
+    record_date: datetime
+    sleep_start: datetime
+    sleep_end: datetime | None = None
+    in_bed_start: datetime | None = None
+    in_bed_end: datetime | None = None
+    total_sleep: float | None = None
+    asleep: float | None = None
+    deep: float | None = None
+    core: float | None = None
+    rem: float | None = None
+    awake: float | None = None
+    in_bed: float | None = None
+
+
+# Skip-reason key (run spec §5): an ECG session dropped for an unparseable
+# start (cannot upsert latest-wins without (source, start)) or an empty
+# voltageMeasurements array (a session without samples carries no data).
+# Counted by job-4's `skipped.ecg` ingest-response accounting — never silent.
+ECG_SKIP = "ecg"
+
+# Skip-reason key (run spec §5): a notification dropped for an unparseable
+# start (the (source_name, start_ts) natural key needs it — cannot upsert
+# latest-wins). Counted by job-4's `skipped.notification` ingest-response
+# accounting — never silent.
+NOTIFICATION_SKIP = "notification"
+
+# Sample kinds (spec §3): HR and HRV sample lists hang off each event; a
+# single ts may carry both, so kind joins the samples PK (spec §6).
+HRN_KIND_HR = "hr"
+HRN_KIND_HRV = "hrv"
+
+# INTEGER column bounds (spec §6): threshold is a Postgres integer (4
+# bytes, signed range [-2147483648, 2147483647]). JSON-legal finite floats
+# like 1e308 convert to 309-digit ints that cannot fit; NaN converts
+# to int only to raise ValueError — _hrn_event_fields drops+counts those
+# events instead of letting the job-7 upsert fail the whole transaction.
+HRN_INT_FIELD_MIN = -(2**31)
+HRN_INT_FIELD_MAX = 2**31 - 1
+
+
 def _num(value: object) -> float | None:
     """Coerce a JSON scalar to float; bools/strings/None are rejected."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -339,20 +547,56 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
-def _qty_for_unit(name: str, declared_unit: str, qty: float) -> tuple[float, str] | None:
-    """Unit-policy gate: canonical match / kJ→kcal conversion / pass-through.
+@dataclass(frozen=True, slots=True)
+class UnitDecision:
+    """Outcome of the unit-policy gate for one sample (pure, no I/O).
 
-    Returns ``(qty, unit)`` to keep, or None when the sample must be SKIPPED
-    (non-canonical unit — iron law 4: never converted, never stored).
+    ``row`` is a ``(qty, unit)`` tuple to store (unit is always the
+    canonical string when a conversion happened); it is None exactly when
+    ``skip_reason`` is set. ``skip_reason`` values are job-4 accounting
+    keys (spec §5) — currently only :data:`UNIT_UNCONVERTIBLE`.
+    """
+
+    row: tuple[float, str] | None
+    skip_reason: str | None = None
+
+
+_UNIT_CONVERSIONS: dict[str, dict[str, tuple[str, float]]] = {
+    # metric → declared unit → (canonical unit, exact factor)
+    "weight_body_mass": {"lb": ("kg", LB_PER_KG), "st": ("kg", ST_PER_KG)},
+    "lean_body_mass": {"lb": ("kg", LB_PER_KG), "st": ("kg", ST_PER_KG)},
+    "apple_sleeping_wrist_temperature": {"degF": ("degC", None)},
+}
+
+
+def _qty_for_unit(name: str, declared_unit: str, qty: float) -> UnitDecision:
+    """Unit-policy gate (iron law 4, amended run 2026-09-17-normalizer-audit).
+
+    Precedence: canonical match keeps the value as-is; a non-canonical
+    declared unit is CONVERTED when an exact factor exists — lb→kg ÷ 2.20462
+    and st→kg ÷ 0.157473 for the mass metrics, °F→°C (°F−32)×5/9 for
+    ``apple_sleeping_wrist_temperature`` only, and the pre-existing
+    kJ→kcal ÷ 4.184 for the energy metrics. Converted rows store the
+    canonical unit string. Units with no exact factor are skipped VISIBLY:
+    the returned decision carries ``skip_reason='unit_unconvertible'`` so
+    the caller can count it (spec §5) instead of dropping silently.
+    Pure: no I/O, no state.
     """
     canonical = CANONICAL_UNITS.get(name)
     if canonical is None:
-        return qty, declared_unit
+        return UnitDecision(row=(qty, declared_unit))
     if declared_unit == canonical:
-        return qty, canonical
+        return UnitDecision(row=(qty, canonical))
     if name in ENERGY_METRICS and declared_unit == "kJ":
-        return qty / KJ_PER_KCAL, "kcal"
-    return None
+        return UnitDecision(row=(qty / KJ_PER_KCAL, "kcal"))
+    conversion = _UNIT_CONVERSIONS.get(name, {}).get(declared_unit)
+    if conversion is not None:
+        target, factor = conversion
+        if factor is None:
+            # °F→°C: exact linear scale transform, wrist temperature only.
+            return UnitDecision(row=((qty - 32) * 5 / 9, target))
+        return UnitDecision(row=(qty / factor, target))
+    return UnitDecision(row=None, skip_reason=UNIT_UNCONVERTIBLE)
 
 
 def _source_of(group: dict[str, object], point: dict[str, object]) -> str:
@@ -382,9 +626,9 @@ def _rows_for_point(group: dict[str, object], point: dict[str, object]) -> Itera
         ts = _parse_ts(point.get("date"))
         if qty is None or ts is None:
             return
-        gated = _qty_for_unit(name, declared_unit, qty)
-        if gated is not None:
-            yield SampleRow(name, source, ts, gated[0], gated[1])
+        decision = _qty_for_unit(name, declared_unit, qty)
+        if decision.row is not None:
+            yield SampleRow(name, source, ts, decision.row[0], decision.row[1])
         return
 
     if "systolic" in keys and "diastolic" in keys:
@@ -419,19 +663,47 @@ def _rows_for_point(group: dict[str, object], point: dict[str, object]) -> Itera
         yield SampleRow(name, source, ts, qty, declared_unit)
         return
 
-    if "totalSleep" in keys:
-        # Sleep aggregated (day-level): asleep-preference, else core+deep+rem.
+    if "date" in keys and keys & _SLEEP_FIELD_KEYS:
+        # Sleep aggregated (day-level), run 2026-09-17-normalizer-audit §1.
+        # Dispatch requires only `date` + ANY sleep field — totalSleep is no
+        # longer mandatory (scenario 9: {date, asleep, core, deep, rem} rows
+        # exist in the archive corpus without it). Common {qty, date} and
+        # unaggregated {startDate, endDate, qty} keep their earlier
+        # precedence above.
         ts = _parse_ts(point.get("date"))
         if ts is None:
             return
-        asleep = _num(point.get("asleep"))
-        if asleep is not None:
-            yield SampleRow(name, source, ts, asleep, declared_unit)
-            return
-        parts = [_num(point.get(part)) for part in ("core", "deep", "rem")]
-        if any(part is None for part in parts):
-            return
-        yield SampleRow(name, source, ts, sum(parts), declared_unit)  # type: ignore[arg-type]
+        # Value precedence (research/predecessor-inventory.md — universal
+        # rule, verified outcomes cited per clause):
+        #   totalSleep>0 wins absolutely: 1,150/1,200 Watch nights carry the
+        #   asleep:0 sentinel (storing asleep would yield 0.0) and 50/50
+        #   mixed-stage nights have totalSleep == core+deep+rem+asleep
+        #   exactly, so asleep is a REAL STAGE there — it must neither
+        #   override totalSleep (would double count) nor be summed with the
+        #   stages (loses it).
+        total_sleep = _num(point.get("totalSleep"))
+        if total_sleep is not None and total_sleep > 0:
+            yield SampleRow(name, source, ts, total_sleep, declared_unit)
+        else:
+            # asleep>0 next: AutoSleep nap rows carry asleep only (nap
+            # 0.5833…). The 0-sentinel on Watch rows never wins.
+            asleep = _num(point.get("asleep"))
+            if asleep is not None and asleep > 0:
+                yield SampleRow(name, source, ts, asleep, declared_unit)
+            else:
+                # core+deep+rem last: all three present and summing > 0.
+                parts = [_num(point.get(part)) for part in ("core", "deep", "rem")]
+                if all(part is not None for part in parts) and sum(parts) > 0:
+                    yield SampleRow(name, source, ts, sum(parts), declared_unit)  # type: ignore[arg-type]
+        # In-bed split (independent of the value rule above): inBed hours
+        # are wall-clock bed time, never sleep, so they NEVER land in
+        # sleep_analysis — a stage/total value above may coexist with an
+        # inBed>0 row (test_inbed_plus_stages_emits_both). 520/2,500
+        # backfill rows + 1 recent row are in-bed-only: they emit ONLY the
+        # sleep_in_bed row below and zero sleep_analysis rows.
+        in_bed = _num(point.get("inBed"))
+        if in_bed is not None and in_bed > 0:
+            yield SampleRow(SLEEP_IN_BED, source, ts, in_bed, declared_unit)
         return
 
     # Unrecognized shape: reported upstream (payloads unknown_formats);
@@ -446,14 +718,34 @@ def metric_rows(document: object) -> list[SampleRow]:
     than raising — envelope validation already happened upstream, and a
     partially-bad payload must still normalize its good parts.
     """
+    return metric_rows_detailed(document)[0]
+
+
+def metric_rows_detailed(
+    document: object,
+) -> tuple[list[SampleRow], dict[str, int]]:
+    """Normalize ``data.metrics`` into SampleRows + a skip-reason census.
+
+    The returned dict counts every dropped point under its reason key
+    (run spec §5 — zero-silent-drops contract). Key ``sleep_no_value``
+    counts sleep-shaped points whose every sleep field is 0/absent AND
+    whose inBed is 0/absent: the point is recognized but carries no sleep
+    value at all, so no row exists for it. The dict is always present
+    (empty when nothing was skipped); keys are frozen by spec §5.
+    This function reports ``sleep_no_value`` (its own lane) and
+    ``unit_unconvertible`` (from the unit-policy gate's decisions);
+    ``unrecognized_shape / ecg / notification`` are counted by their own
+    jobs. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
     if not isinstance(document, dict):
-        return []
+        return [], skips
     data = document.get("data")
     if not isinstance(data, dict):
-        return []
+        return [], skips
     metrics = data.get("metrics")
     if not isinstance(metrics, list):
-        return []
+        return [], skips
 
     rows: list[SampleRow] = []
     for group in metrics:
@@ -462,10 +754,42 @@ def metric_rows(document: object) -> list[SampleRow]:
         points = group.get("data")
         if not isinstance(points, list):
             continue
+        name = group.get("name")
+        units = group.get("units")
+        declared_unit = units if isinstance(units, str) else str(units)
         for point in points:
             if isinstance(point, dict):
-                rows.extend(_rows_for_point(group, point))
-    return rows
+                emitted = list(_rows_for_point(group, point))
+                if not emitted and "qty" in point.keys() and "date" in point.keys():
+                    # qty/date shape produced no row: bad qty/ts yield
+                    # nothing observable (pre-existing), but a canonical
+                    # metric in an unconvertible unit must be dropped
+                    # VISIBLY — the reason comes from the gate itself
+                    # (spec §5 zero-silent-drops contract).
+                    qty = _num(point.get("qty"))
+                    if qty is not None and _parse_ts(point.get("date")) is not None:
+                        gate_name = name if isinstance(name, str) else ""
+                        decision = _qty_for_unit(gate_name, declared_unit, qty)
+                        if decision.skip_reason is not None:
+                            skips[decision.skip_reason] = skips.get(decision.skip_reason, 0) + 1
+                if _is_sleep_point(point) and not any(r.name != SLEEP_IN_BED for r in emitted):
+                    # No sleep_analysis row came out of a recognized sleep
+                    # point: either it is in-bed-only (a legit split, no
+                    # skip) or it carried no value at all (counted).
+                    if not any(r.name == SLEEP_IN_BED for r in emitted):
+                        skips[SLEEP_NO_VALUE] = skips.get(SLEEP_NO_VALUE, 0) + 1
+                rows.extend(emitted)
+    return rows, skips
+
+
+def _is_sleep_point(point: dict[str, object]) -> bool:
+    """True when a point has `date` plus at least one sleep field.
+
+    Mirrors the aggregated-sleep dispatch guard in :func:`_rows_for_point`
+    so skip accounting can classify points the branch recognized.
+    """
+    keys = point.keys()
+    return "date" in keys and bool(keys & _SLEEP_FIELD_KEYS)
 
 
 def _energy_kcal(value: object) -> float | None:
@@ -660,3 +984,491 @@ def workout_rows(
             )
         )
     return result
+
+
+def _ecg_session_fields(
+    session: dict[str, object],
+) -> tuple[datetime, datetime, str | None, int | None, int | None, int] | None:
+    """Extract the scalars of one ECG session, or None when it must be skipped.
+
+    ``start``/``end`` are HAE ``yyyy-MM-dd HH:mm:ss Z`` strings parsed by
+    :func:`_parse_ts`; a session missing a parseable start or end cannot
+    upsert latest-wins (the (source_name, start_ts) natural key needs the
+    start; end_ts is NOT NULL per spec §6), so it is dropped and counted
+    (``skipped.ecg``, spec §5). ``samplingFrequency`` and
+    ``averageHeartRate`` are optional scalars (spec §6: nullable columns);
+    ``numberOfVoltageMeasurements`` falls back to 0 — the pipeline upsert
+    stores the parsed array length as authoritative when the count is 0.
+    """
+    start = _parse_ts(session.get("start"))
+    if start is None:
+        return None
+    end = _parse_ts(session.get("end"))
+    if end is None:
+        return None
+    classification = session.get("classification")
+    frequency = _num(session.get("samplingFrequency"))
+    avg_hr = _num(session.get("averageHeartRate"))
+    declared = _num(session.get("numberOfVoltageMeasurements"))
+    return (
+        start,
+        end,
+        classification if isinstance(classification, str) and classification else None,
+        int(frequency) if frequency is not None else None,
+        int(avg_hr) if avg_hr is not None else None,
+        int(declared) if declared is not None else 0,
+    )
+
+
+def _ecg_voltage_rows(
+    ecg_ref: int, measurements: object
+) -> tuple[list[EcgVoltageRow], int]:
+    """``voltageMeasurements`` → (EcgVoltageRows, dropped_count).
+
+    Voltage ``date`` is a UNIX epoch SECONDS number (verified 42/42: first
+    voltage == session start ±2s under this reading; CF-absolute would give
+    year-2056 — the predecessor CF epoch belongs to the retired .hae lane,
+    NOT REST ECG). Non-numeric/missing date or voltage values drop the
+    individual point (counted) while the rest of the array is kept: a
+    partially-corrupt session must not poison its good samples.
+    """
+    rows: list[EcgVoltageRow] = []
+    dropped = 0
+    if not isinstance(measurements, list):
+        return [], 0
+    for seq, point in enumerate(measurements):
+        if not isinstance(point, dict):
+            dropped += 1
+            continue
+        date_value = point.get("date")
+        if isinstance(date_value, bool) or not isinstance(date_value, (int, float)):
+            dropped += 1
+            continue
+        # Huge-int voltage literals (10**400 is JSON-legal) overflow float(),
+        # and NaN/inf values are not storable sample magnitudes — guard
+        # exactly like the sibling HRN value conversion (spec §5: drop the
+        # point, count it, never crash the payload).
+        try:
+            voltage = _num(point.get("voltage"))
+        except (OverflowError, OSError, ValueError):
+            dropped += 1
+            continue
+        if voltage is None or not isfinite(voltage):
+            dropped += 1
+            continue
+        units = point.get("units")
+        # JSON-legal but unrepresentable epochs (NaN/inf/1e300/huge) must
+        # drop the point, not crash the payload (zero-silent-drop: counted).
+        try:
+            ts = datetime.fromtimestamp(date_value, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            dropped += 1
+            continue
+        rows.append(
+            EcgVoltageRow(
+                ecg_ref=ecg_ref,
+                seq=seq,
+                ts=ts,
+                voltage=voltage,
+                units=units if isinstance(units, str) and units else "mcV",
+            )
+        )
+    return rows, dropped
+
+
+def _ecg_rows(document: object) -> tuple[list[EcgRow], list[EcgVoltageRow], dict[str, int]]:
+    """Normalize ``data.ecg`` into (EcgRows, EcgVoltageRows, skip census).
+
+    Session lanes (like workouts): rows go to the ``ecgs``/``ecg_voltages``
+    tables via job-7's upserts — OUT of ``raw_samples`` and
+    ``daily_rollups``. ``ref`` is the session's index in ``data.ecg``; the
+    pipeline resolves it to the DB ``id`` after the parent upsert, so
+    voltage rows never need a DB round-trip here (pure, no I/O).
+
+    Skips (counted under ``ecg``, spec §5): sessions with an unparseable
+    start/end, sessions whose parsed voltage array is empty (nothing to
+    store), and malformed voltage points. ``source`` is the string
+    ``source`` field (real corpus: ``"심전도"``); a non-string source is
+    skipped like any other unusable natural-key half. Empty/non-list
+    ``data.ecg`` yields nothing with no skips — an absent lane is not a
+    drop. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
+    if not isinstance(document, dict):
+        return [], [], skips
+    data = document.get("data")
+    if not isinstance(data, dict):
+        return [], [], skips
+    sessions = data.get("ecg")
+    if not isinstance(sessions, list):
+        return [], [], skips
+
+    session_rows: list[EcgRow] = []
+    voltage_rows: list[EcgVoltageRow] = []
+    dropped_total = 0
+    for ref, session in enumerate(sessions):
+        if not isinstance(session, dict):
+            dropped_total += 1
+            continue
+        source_name = session.get("source")
+        if not isinstance(source_name, str) or not source_name:
+            dropped_total += 1
+            continue
+        fields = _ecg_session_fields(session)
+        if fields is None:
+            dropped_total += 1
+            continue
+        start, end, classification, frequency, avg_hr, declared_count = fields
+        parsed_voltages, dropped_voltages = _ecg_voltage_rows(
+            ref, session.get("voltageMeasurements")
+        )
+        if not parsed_voltages:
+            # Empty (or fully malformed) voltageMeasurements: a session
+            # without samples carries no data — skip the session row too.
+            dropped_total += 1 + dropped_voltages
+            continue
+        dropped_total += dropped_voltages
+        session_rows.append(
+            EcgRow(
+                ref=ref,
+                source_name=source_name,
+                start_ts=start,
+                end_ts=end,
+                classification=classification,
+                sampling_frequency=frequency,
+                average_heart_rate=avg_hr,
+                # Declared count is authoritative on the real corpus (42/42
+                # sessions carry it); the parsed length covers a payload
+                # that omits the field.
+                voltage_count=declared_count or len(parsed_voltages),
+            )
+        )
+        voltage_rows.extend(parsed_voltages)
+    if dropped_total:
+        # Sparse census parity with metric_rows_detailed: zero drops →
+        # empty dict; job-4's merge_skipped treats absent keys as 0.
+        skips[ECG_SKIP] = dropped_total
+    return session_rows, voltage_rows, skips
+
+
+# Voltage insert batching cap (spec §8: executemany batches ≤10k rows per
+# statement — the 42-session backfill carries 600,000 voltages; the
+# pipeline (job-7) chunks with this limit).
+ECG_VOLTAGE_BATCH = 10_000
+
+
+def _hrn_sample_rows(
+    hrn_ref: int,
+    samples: object,
+    *,
+    kind: str,
+    value_key: str,
+    unit_key: str,
+) -> tuple[list[HrnSampleRow], int]:
+    """One event's sample list → (HrnSampleRows, dropped_count).
+
+    ``kind`` distinguishes the two lists ('hr' vs 'hrv'); the value/unit
+    keys are pinned per kind from the real backfill corpus: HR reads
+    ``heartRate``/``hrUnits``, HRV reads ``hrv``/``units`` (spec §3). ``ts``
+    is the sample's ``timestamp.start`` via :func:`_parse_ts`. Malformed
+    points (non-dict, missing/None value, unparseable ts) drop the
+    individual sample (counted) while good siblings are kept: a
+    partially-corrupt event must not poison its good samples.
+
+    Value coercion is overflow-guarded: JSON ints parse natively (bypassing
+    payloads' parse_float/parse_constant guards), so a huge integer literal
+    like ``10**400`` reaches :func:`_num` and ``float()`` raises
+    OverflowError — the point drops + counts under ``notification``
+    (mirroring :func:`_ecg_voltage_rows`' epoch guard) instead of crashing
+    the payload (zero-silent-drops, never-crash discipline).
+    """
+    rows: list[HrnSampleRow] = []
+    dropped = 0
+    if not isinstance(samples, list):
+        return [], 0
+    for point in samples:
+        if not isinstance(point, dict):
+            dropped += 1
+            continue
+        try:
+            value = _num(point.get(value_key))
+        except OverflowError:
+            dropped += 1
+            continue
+        if value is None:
+            dropped += 1
+            continue
+        ts_payload = point.get("timestamp")
+        ts_start = ts_payload.get("start") if isinstance(ts_payload, dict) else None
+        ts = _parse_ts(ts_start)
+        if ts is None:
+            dropped += 1
+            continue
+        units = point.get(unit_key)
+        rows.append(
+            HrnSampleRow(
+                hrn_ref=hrn_ref,
+                ts=ts,
+                kind=kind,
+                value=value,
+                units=units if isinstance(units, str) and units else None,
+            )
+        )
+    return rows, dropped
+
+
+def _hrn_event_fields(
+    event: dict[str, object],
+) -> tuple[datetime, datetime, str, int | None] | None:
+    """Extract the scalars of one notification event, or None when skipped.
+
+    ``start``/``end`` are ISO-8601 Z strings parsed by :func:`_parse_ts`
+    (demo corpus: ``2026-06-16T04:39:20Z``). An event missing a parseable
+    start or end cannot upsert latest-wins ((source_name, start_ts) needs
+    the start; end_ts is NOT NULL per spec §6), so it is dropped and
+    counted (``skipped.notification``, spec §5). ``kind`` is the raw
+    ``heartNotification`` string — NOT NULL per spec §6, so a missing
+    non-string kind drops the event. ``threshold`` is optional (nullable
+    column) and magnitude-guarded: ints bypass the JSON parse guards, so
+    a huge literal (``10**400``) overflows ``float()``, a finite ``1e308``
+    widens to a 309-digit int that cannot fit the INTEGER threshold column
+    (spec §6), and a NaN literal raises ``ValueError`` on ``int(nan)`` —
+    either way the event drops + counts under ``notification`` (mirroring
+    :func:`_ecg_voltage_rows`' epoch guard), keeping the job-7 transaction
+    crash-free. The bound check is the SIGNED INT32 range, so a valid
+    INT32_MIN threshold (-2147483648) is kept, not dropped.
+    """
+    start = _parse_ts(event.get("start"))
+    if start is None:
+        return None
+    end = _parse_ts(event.get("end"))
+    if end is None:
+        return None
+    kind = event.get("heartNotification")
+    if not isinstance(kind, str) or not kind:
+        return None
+    # JSON-legal but unrepresentable magnitudes (huge int → OverflowError,
+    # finite 1e308 → 309-digit int, NaN → ValueError on int(nan)) must
+    # drop the event, not crash the payload or the later upsert
+    # (zero-silent-drop: counted).
+    try:
+        threshold = _num(event.get("threshold"))
+        threshold_int = int(threshold) if threshold is not None else None
+    except (OverflowError, ValueError):
+        return None
+    if threshold_int is not None and not (
+        HRN_INT_FIELD_MIN <= threshold_int <= HRN_INT_FIELD_MAX
+    ):
+        return None
+    return start, end, kind, threshold_int
+
+
+def _hrn_rows(document: object) -> tuple[list[HrnRow], list[HrnSampleRow], dict[str, int]]:
+    """Normalize ``data.heartRateNotifications`` into (HrnRows, HrnSampleRows,
+    skip census).
+
+    Session lanes (like workouts): rows go to the
+    ``heart_rate_notifications``/``heart_rate_notification_samples`` tables
+    via job-7's upserts — OUT of ``raw_samples`` and ``daily_rollups``.
+    ``ref`` is the event's index in ``data.heartRateNotifications``; the
+    pipeline resolves it to the DB ``id`` after the parent upsert, so
+    sample rows never need a DB round-trip here (pure, no I/O).
+
+    Skips (counted under ``notification``, spec §5): events with an
+    unparseable start/end, a missing/non-string ``heartNotification`` kind,
+    and malformed individual samples (missing/None value, unparseable
+    timestamp). ``source`` is the ``{name, identifier}`` object — ``name``
+    feeds the natural key; a missing/non-string name is skipped like any
+    other unusable natural-key half. Empty/non-list lane yields nothing
+    with no skips — an absent lane is not a drop. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
+    if not isinstance(document, dict):
+        return [], [], skips
+    data = document.get("data")
+    if not isinstance(data, dict):
+        return [], [], skips
+    events = data.get("heartRateNotifications")
+    if not isinstance(events, list):
+        return [], [], skips
+
+    event_rows: list[HrnRow] = []
+    sample_rows: list[HrnSampleRow] = []
+    dropped_total = 0
+    for ref, event in enumerate(events):
+        if not isinstance(event, dict):
+            dropped_total += 1
+            continue
+        source_payload = event.get("source")
+        source_name = source_payload.get("name") if isinstance(source_payload, dict) else None
+        if not isinstance(source_name, str) or not source_name:
+            dropped_total += 1
+            continue
+        fields = _hrn_event_fields(event)
+        if fields is None:
+            dropped_total += 1
+            continue
+        start, end, kind, threshold = fields
+        event_rows.append(
+            HrnRow(
+                ref=ref,
+                source_name=source_name,
+                start_ts=start,
+                end_ts=end,
+                kind=kind,
+                threshold=threshold,
+            )
+        )
+        hr_parsed, hr_dropped = _hrn_sample_rows(
+            ref,
+            event.get("heartRateData"),
+            kind=HRN_KIND_HR,
+            value_key="heartRate",
+            unit_key="hrUnits",
+        )
+        hrv_parsed, hrv_dropped = _hrn_sample_rows(
+            ref,
+            event.get("hrvData"),
+            kind=HRN_KIND_HRV,
+            value_key="hrv",
+            unit_key="units",
+        )
+        dropped_total += hr_dropped + hrv_dropped
+        sample_rows.extend(hr_parsed)
+        sample_rows.extend(hrv_parsed)
+    if dropped_total:
+        # Sparse census parity with metric_rows_detailed/_ecg_rows: zero
+        # drops → empty dict; job-4's merge_skipped treats absent keys as 0.
+        skips[NOTIFICATION_SKIP] = dropped_total
+    return event_rows, sample_rows, skips
+
+
+# Skip-reason key (mcp-analysis-parity spec §1): a recognized aggregated-
+# sleep point without a parseable ``sleepStart`` cannot join the
+# sleep_sessions lane's (source_name, sleep_start) latest-wins upsert key —
+# dropped and counted under ``skipped.sleep_session`` (zero-silent-drops
+# contract, iron law 8). The existing sleep_no_value / sleep_analysis /
+# sleep_in_bed emissions are untouched (census lock is the guard).
+SLEEP_SESSION_SKIP = "sleep_session"
+
+# Payload keys read verbatim into SleepSessionRow (mcp-analysis-parity
+# spec §1): timestamps via _parse_ts, durations via _num.
+_SLEEP_SESSION_TS_KEYS = {
+    "sleep_start": "sleepStart",
+    "sleep_end": "sleepEnd",
+    "in_bed_start": "inBedStart",
+    "in_bed_end": "inBedEnd",
+}
+_SLEEP_SESSION_NUM_KEYS = {
+    "total_sleep": "totalSleep",
+    "asleep": "asleep",
+    "deep": "deep",
+    "core": "core",
+    "rem": "rem",
+    "awake": "awake",
+    "in_bed": "inBed",
+}
+
+
+def _sleep_session_rows(document: object) -> tuple[list[SleepSessionRow], dict[str, int]]:
+    """Normalize ``data.metrics`` sleep-shaped points into (SleepSessionRows,
+    skip census) — the parallel session lane (mcp-analysis-parity spec §1).
+
+    Recognition is IDENTICAL to the existing aggregated-sleep dispatch
+    (``date`` key + ∩ :data:`_SLEEP_FIELD_KEYS` ≠ ∅, the guard
+    ``payloads._point_shape`` / ``_rows_for_point`` use): points matching
+    earlier-precedence shapes ({qty, date}, {startDate, endDate, qty}) are
+    NOT session records and yield nothing here.
+
+    One row per recognized record — per-source rows are NEVER merged and no
+    nap filtering happens server-side. Fields are stored VERBATIM (no
+    re-derivation, no zero-filling): the Watch ``asleep: 0`` sentinel stays
+    0.0, mixed-stage nights keep their real ``asleep``. A point without a
+    parseable ``sleepStart`` yields NO row and counts under
+    ``skipped.sleep_session`` (spec §1 — the natural key needs the start).
+    Duration coercion is overflow-guarded like the sibling lanes
+    (:func:`_hrn_sample_rows`, :func:`_hrn_event_fields`): JSON ints parse
+    natively (bypassing payloads' parse_float/parse_constant guards), so a
+    huge integer literal (10**400) in a duration field raises OverflowError
+    in :func:`_num`; the point drops + counts under ``sleep_session``
+    instead of crashing the payload.
+    Existing sleep_analysis/sleep_in_bed emissions are untouched; census
+    parity lives in tests/unit/test_census_lock.py. Pure: no I/O, no state.
+    """
+    skips: dict[str, int] = {}
+    if not isinstance(document, dict):
+        return [], skips
+    data = document.get("data")
+    if not isinstance(data, dict):
+        return [], skips
+    metrics = data.get("metrics")
+    if not isinstance(metrics, list):
+        return [], skips
+
+    rows: list[SleepSessionRow] = []
+    for group in metrics:
+        if not isinstance(group, dict):
+            continue
+        points = group.get("data")
+        if not isinstance(points, list):
+            continue
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            keys = point.keys()
+            # Same recognition guard as _rows_for_point's aggregated-sleep
+            # branch (and earlier shapes keep their precedence — a {qty,
+            # date} point is not a session record even when a sleep field
+            # rides along).
+            if "qty" in keys and "date" in keys:
+                continue
+            if "startDate" in keys and "endDate" in keys and "qty" in keys:
+                continue
+            if not ("date" in keys and keys & _SLEEP_FIELD_KEYS):
+                continue
+            source = _source_of(group, point)
+            record_date = _parse_ts(point.get("date"))
+            sleep_start = _parse_ts(point.get("sleepStart"))
+            if record_date is None or sleep_start is None:
+                # record_date is NOT NULL and sleep_start is the upsert
+                # key's second half — either missing means no row, and the
+                # drop is VISIBLE (skipped.sleep_session, spec §1).
+                skips[SLEEP_SESSION_SKIP] = skips.get(SLEEP_SESSION_SKIP, 0) + 1
+                continue
+            timestamps = {
+                field: _parse_ts(point.get(key)) for field, key in _SLEEP_SESSION_TS_KEYS.items()
+            }
+            # Overflow-guarded coercion, mirroring _hrn_sample_rows /
+            # _hrn_event_fields: JSON ints parse natively (bypassing
+            # payloads' parse_float/parse_constant guards), so a huge
+            # integer literal like 10**400 in a duration field reaches
+            # _num and float() raises OverflowError — the point drops and
+            # counts under skipped.sleep_session (zero-silent-drops,
+            # never-crash discipline) instead of crashing the upsert.
+            # No partial row: one corrupt stage makes the record unusable
+            # verbatim (a NaN-like stage cannot be quietly repaired).
+            try:
+                durations = {
+                    field: _num(point.get(key)) for field, key in _SLEEP_SESSION_NUM_KEYS.items()
+                }
+            except OverflowError:
+                skips[SLEEP_SESSION_SKIP] = skips.get(SLEEP_SESSION_SKIP, 0) + 1
+                continue
+            rows.append(
+                SleepSessionRow(
+                    source_name=source,
+                    record_date=record_date,
+                    sleep_start=sleep_start,
+                    sleep_end=timestamps["sleep_end"],
+                    in_bed_start=timestamps["in_bed_start"],
+                    in_bed_end=timestamps["in_bed_end"],
+                    total_sleep=durations["total_sleep"],
+                    asleep=durations["asleep"],
+                    deep=durations["deep"],
+                    core=durations["core"],
+                    rem=durations["rem"],
+                    awake=durations["awake"],
+                    in_bed=durations["in_bed"],
+                )
+            )
+    return rows, skips

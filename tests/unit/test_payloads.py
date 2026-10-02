@@ -8,7 +8,11 @@ hardening fixes from the slice-1-payloads code-critic review:
 - invalid UTF-8 / NaN / Infinity / deep nesting / non-finite floats →
   MalformedPayload (never RecursionError or inf leakage),
 - full-key-set shape recognition (partial overlap → unknown_formats),
-- data_type stays within the 'metrics' | 'workouts' contract enum.
+- data_type stays within the 'metrics' | 'workouts' contract enum,
+- run 2026-09-17-normalizer-audit §5 (job-4): the ``skipped`` accounting —
+  always present, frozen keys, unrecognized_shape mirrored from
+  unknown_formats — plus the empty_skipped/merge_skipped aggregation
+  helpers the pipeline + replay fold counter censuses with.
 """
 
 from __future__ import annotations
@@ -17,7 +21,14 @@ import json
 
 import pytest
 
-from health_db.payloads import MalformedPayload, PayloadReport, parse
+from health_db.payloads import (
+    SKIPPED_KEYS,
+    MalformedPayload,
+    PayloadReport,
+    empty_skipped,
+    merge_skipped,
+    parse,
+)
 
 
 def _recursion_limit() -> int:
@@ -124,6 +135,42 @@ class TestWrongShapeRejected:
     def test_empty_payload_rejected(self):
         with pytest.raises(MalformedPayload, match="no metrics and no workouts"):
             parse(wrap([], []))
+
+    def test_lane_only_payload_accepted(self):
+        # Run 2026-09-17-normalizer-audit §2/§3: an envelope that would be
+        # "empty" is still valid when it carries ECG/notification lane data
+        # (the lanes store real rows; rejecting them would silently drop a
+        # documented surface — anti-scenario 1).
+        report = parse(json.dumps({"data": {"metrics": [], "workouts": [], "ecg": [
+            {"source": "심전도", "start": "2025-10-12 10:45:06 +0900",
+             "end": "2025-10-12 10:45:36 +0900", "voltageMeasurements": [
+                 {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}]}
+        ]}}).encode())
+        # _classify_data_type: a lane-only payload (no metrics, no workouts)
+        # labels BOTH the response and raw_ingest.data_type with the lane
+        # that carried it — one shared classifier, so the two surfaces can
+        # never diverge.
+        assert report.data_type == "ecg"
+        assert report.skipped["ecg"] == 0
+
+    def test_lane_only_hrn_payload_accepted(self):
+        hrn = [{"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:49:20Z",
+                "heartNotification": "high_heart_rate_notification",
+                "source": {"name": "Watch"}}]
+        report = parse(json.dumps(
+            {"data": {"metrics": [], "workouts": [], "heartRateNotifications": hrn}}
+        ).encode())
+        assert report.skipped["notification"] == 0
+
+    def test_empty_lane_list_still_rejected(self):
+        # An empty ecg list is not lane data: the envelope stays empty.
+        with pytest.raises(MalformedPayload, match="no metrics and no workouts"):
+            parse(json.dumps({"data": {"metrics": [], "workouts": [], "ecg": []}}).encode())
+
+    def test_lane_key_with_non_list_value_still_rejected(self):
+        # A scalar/malformed lane value carries no rows — not lane data.
+        with pytest.raises(MalformedPayload, match="no metrics and no workouts"):
+            parse(json.dumps({"data": {"metrics": [], "workouts": [], "ecg": "nope"}}).encode())
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +428,11 @@ class TestUnknownFormatDetection:
 
 # ---------------------------------------------------------------------------
 # Full-key-set shape recognition: partial overlap → unknown_formats
+#
+# Run 2026-09-17-normalizer-audit §1: the sleep aggregated shape is the one
+# documented exception — it recognizes on a SUFFICIENT key set ({date} + any
+# sleep field), not a full key set. Everything else keeps full-key-set
+# recognition.
 # ---------------------------------------------------------------------------
 
 
@@ -405,8 +457,38 @@ class TestPartialKeyOverlapNotRecognized:
         report = parse(wrap([metric("heart_rate", [{"Min": 60, "Max": 90, "date": DATE}])]))
         assert len(report.unknown_formats) == 1
 
-    def test_sleep_aggregated_partial_keys_unknown(self):
+    def test_sleep_aggregated_loosened_keys_recognized(self):
+        # Run 2026-09-17-normalizer-audit §1: recognition loosened to the
+        # sufficient-key-set rule — {date} + ANY sleep field is enough;
+        # totalSleep is no longer required (scenario 9 archive shape).
         report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08", "asleep": 7.0}])]))
+        assert report.unknown_formats == ()
+        assert report.samples == 1
+
+    def test_sleep_date_plus_sleepstart_only_recognized(self):
+        # sleepStart alone (no value fields) is a recognized sleep shape.
+        report = parse(
+            wrap(
+                [
+                    metric(
+                        "sleep_analysis",
+                        [{"date": "2026-09-08", "sleepStart": "2026-09-07 23:00:00 +0900"}],
+                    )
+                ]
+            )
+        )
+        assert report.unknown_formats == ()
+
+    def test_sleep_valueless_shape_still_counts_as_sample(self):
+        # Recognition ≠ a row: {date, totalSleep: 0} counts as a sample and
+        # normalize yields no row — skip accounting is the normalizer's job.
+        report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08", "totalSleep": 0}])]))
+        assert report.unknown_formats == ()
+        assert report.samples == 1
+
+    def test_sleep_date_without_any_sleep_field_is_unknown(self):
+        # {date} alone (no sleep-field overlap) stays unrecognized.
+        report = parse(wrap([metric("sleep_analysis", [{"date": "2026-09-08"}])]))
         assert len(report.unknown_formats) == 1
 
     def test_sleep_unaggregated_missing_value_is_unknown(self):
@@ -527,6 +609,28 @@ class TestCountingAndClassification:
         assert report_m.data_type in ("metrics", "workouts")
         assert report_w.data_type in ("metrics", "workouts")
 
+    def test_data_type_lane_only_labels_lane_key(self):
+        # One shared classifier feeds the response AND raw_ingest.data_type:
+        # a lane-only payload carries the lane key as its label (job-7 eval
+        # reconciliation — the surfaces can never diverge).
+        report_ecg = parse(
+            json.dumps(
+                {"data": {"metrics": [], "workouts": [], "ecg": [
+                    {"source": "심전도", "start": "2025-10-12 10:45:06 +0900",
+                     "end": "2025-10-12 10:45:36 +0900", "voltageMeasurements": [
+                         {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}]}
+                ]}}
+            ).encode()
+        )
+        report_hrn = parse(json.dumps(
+            {"data": {"metrics": [], "workouts": [], "heartRateNotifications": [
+                {"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:49:20Z",
+                 "heartNotification": "high_heart_rate_notification",
+                 "source": {"name": "Watch"}}]}}
+        ).encode())
+        assert report_ecg.data_type == "ecg"
+        assert report_hrn.data_type == "heartRateNotifications"
+
     def test_metrics_only_envelope_without_workouts_key(self):
         report = parse(json.dumps({"data": {"metrics": [metric("x", [])]}}).encode())
         assert report.data_type == "metrics"
@@ -572,3 +676,99 @@ class TestContract:
     def test_malformed_payload_is_valueerror(self):
         # API layer catches ValueError-shaped MalformedPayload for 400 + quarantine.
         assert issubclass(MalformedPayload, ValueError)
+
+
+# ---------------------------------------------------------------------------
+# Skip accounting (run 2026-09-17-normalizer-audit §5, job-4)
+# ---------------------------------------------------------------------------
+
+
+class TestSkipAccounting:
+    def test_skipped_always_present_with_frozen_keys_all_zero(self):
+        report = parse(wrap([metric("step_count", [{"qty": 1, "date": DATE}])]))
+        assert set(report.skipped) == set(SKIPPED_KEYS)
+        assert report.skipped == dict.fromkeys(SKIPPED_KEYS, 0)
+
+    def test_unrecognized_point_increments_unrecognized_shape(self):
+        report = parse(wrap([metric("heart_rate", [{"Avg": 72, "date": DATE}])]))
+        assert report.skipped["unrecognized_shape"] == 1
+        assert len(report.unknown_formats) == 1
+
+    def test_unrecognized_workout_increments_unrecognized_shape(self):
+        report = parse(wrap([], [{"name": "no-id workout"}]))
+        assert report.skipped["unrecognized_shape"] == 1
+        assert len(report.unknown_formats) == 1
+
+    def test_two_drops_increment_by_two(self):
+        report = parse(
+            wrap(
+                [
+                    metric("blood_pressure", [{"systolic": 120, "date": DATE}]),
+                    metric("heart_rate", [{"Avg": 72, "date": DATE}]),
+                ]
+            )
+        )
+        assert report.skipped["unrecognized_shape"] == 2
+        assert len(report.unknown_formats) == 2
+
+    def test_recognized_shapes_never_counted(self):
+        report = parse(
+            wrap(
+                [
+                    metric("step_count", [{"qty": 1, "date": DATE}]),
+                    metric(
+                        "sleep_analysis",
+                        [{"date": "2026-09-08", "asleep": 7.0}],
+                    ),
+                    metric("heart_rate", [{"Min": 60, "Avg": 70, "Max": 80, "date": DATE}]),
+                ]
+            )
+        )
+        assert report.unknown_formats == ()
+        assert report.skipped["unrecognized_shape"] == 0
+
+    def test_empty_skipped_returns_fresh_independent_dicts(self):
+        first = empty_skipped()
+        second = empty_skipped()
+        assert first == second == dict.fromkeys(SKIPPED_KEYS, 0)
+        first["ecg"] = 5
+        assert second["ecg"] == 0, "callers must own independent copies"
+
+    def test_merge_folds_known_keys_in_place(self):
+        target = empty_skipped()
+        merged = merge_skipped(target, {"sleep_no_value": 2, "ecg": 1})
+        assert merged is target, "merge is in place"
+        assert target["sleep_no_value"] == 2 and target["ecg"] == 1
+
+    def test_merge_ignores_unknown_and_non_int_keys(self):
+        target = empty_skipped()
+        merge_skipped(target, {"bogus_key": 9, "ecg": True, "notification": "3", "hrv": 1.5})
+        assert set(target) == set(SKIPPED_KEYS), "unknown keys must not leak in"
+        assert target["ecg"] == 0 and target["notification"] == 0
+
+    def test_merge_accumulates_across_calls(self):
+        target = empty_skipped()
+        merge_skipped(target, {"unit_unconvertible": 1})
+        merge_skipped(target, {"unit_unconvertible": 2, "unrecognized_shape": 3})
+        assert target["unit_unconvertible"] == 3
+        assert target["unrecognized_shape"] == 3
+
+    def test_skipped_keys_contract_is_frozen_spec_set(self):
+        # spec §5 drift-guard: keys are frozen by the run spec. A change
+        # here must be a spec change, never an accident. ``sleep_session``
+        # was added additively by run 2026-09-28-mcp-analysis-parity §1
+        # (sleep-shaped points lacking a parseable sleepStart).
+        assert SKIPPED_KEYS == (
+            "unit_unconvertible",
+            "unrecognized_shape",
+            "ecg",
+            "notification",
+            "sleep_no_value",
+            "sleep_session",
+        )
+
+    def test_report_contract_frozen_with_skipped_field(self):
+        report = parse(wrap([metric("step_count", [{"qty": 1, "date": "d"}])]))
+        assert isinstance(report, PayloadReport)
+        with pytest.raises(Exception):
+            report.skipped = {}  # type: ignore[misc]

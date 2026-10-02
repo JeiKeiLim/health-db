@@ -1,0 +1,46 @@
+{
+  "_provenance": "Trimmed heart-rate-notification event (run 2026-09-17-normalizer-audit, spec section 3). Shape mirrors tests/acceptance/parse_everything.py HR_NOTIFICATION: one real backfill event with one HR sample + one HRV sample. Value/unit keys are pinned from the corpus: HR reads heartRate/hrUnits ('count/min'), HRV reads hrv/units ('ms'); sample ts is timestamp.start (ISO-8601 Z). Source keeps the generic {name, identifier} object shape with a scrubbed identifier.",
+  "census_note": "The full backfill file carries 350 notification events and 1,900 samples; this fixture preserves the shape, not the counts (spec: trimmed fixtures, acceptance asserts 1 event + 2 samples).",
+  "fixtures": [
+    {
+      "id": "hr_notification",
+      "desc": "Scenario 6: one high-heart-rate event with 1 HR + 1 HRV sample; kinds 'hr'/'hrv' join the samples PK",
+      "event": {
+        "start": "2026-06-16T04:39:20Z",
+        "end": "2026-06-16T04:39:20Z",
+        "threshold": 118,
+        "heartNotification": "high_heart_rate_notification",
+        "source": {"name": "Apple Watch", "identifier": "com.apple.health"},
+        "heartRateData": [
+          {
+            "hrUnits": "count/min",
+            "heartRate": 132,
+            "timestamp": {
+              "measurementDuration": 0,
+              "end": "2026-06-16T04:40:29Z",
+              "units": "s",
+              "start": "2026-06-16T04:40:29Z"
+            }
+          }
+        ],
+        "hrvData": [
+          {
+            "units": "ms",
+            "hrv": 27.4,
+            "timestamp": {
+              "measurementDuration": 59.5,
+              "end": "2026-06-16T04:31:05Z",
+              "units": "s",
+              "start": "2026-06-16T04:30:05Z"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "event_rows": 1,
+        "sample_rows": 2,
+        "kinds": ["hr", "hrv"]
+      }
+    }
+  ]
+}

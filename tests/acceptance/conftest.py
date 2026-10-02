@@ -226,6 +226,10 @@ def make_metrics_payload(qty: float = 8500.0, date: str = "2026-09-08 09:00:00 +
     1 heart_rate Avg-shape, 1 sleep_analysis aggregated) so the db_mcp
     tests' fixed row counts hold. ``qty``/``date`` override the FIRST
     step_count point (the latest-wins / KST-boundary tests vary these).
+
+    The sleep point has no ``inBed`` key: post-run
+    2026-09-17-normalizer-audit the in-bed split emits a sleep_in_bed row
+    only for inBed>0 points, so the 4-row count here stays exact.
     """
     return {
         "data": {
@@ -574,6 +578,13 @@ class Archive:
     follows ``config.PENDING_DIR`` live. ``write_payload``/``root`` (the
     replay-corpus seam) use that same root so ``replay_dir`` sees both
     outage-queued and synthetic payloads under one tree.
+
+    ``route_archive_root`` exposes the route's own archive tree
+    (``config.ARCHIVE_ROOT``): payloads posted through the real ingest
+    route land THERE, so a replay test over route-archived payloads must
+    scan this root — the replay-corpus root (pending) and the archive tree
+    are deliberately disjoint (iron law 2: pending never replaces the
+    archive).
     """
 
     def __init__(self, pending) -> None:
@@ -582,6 +593,12 @@ class Archive:
     @property
     def root(self):
         return self._pending.root
+
+    @property
+    def route_archive_root(self):
+        import health_db.config as config
+
+        return Path(config.ARCHIVE_ROOT)
 
     def pending_count(self) -> int:
         return self._pending.pending_count()

@@ -141,19 +141,39 @@ def _tool_names(server) -> list[str]:
 
 
 class TestBuildMcpServer:
-    def test_registers_exactly_the_8_spec_tools(self):
+    def test_registers_exactly_the_12_spec_tools(self):
+        """The original 8 tools (unchanged schemas) + run
+        2026-09-17-normalizer-audit §7's three lane tools + run
+        2026-09-28-mcp-analysis-parity's sleep-session tool."""
         server = build_mcp_server(pool=_FakePool())
         names = _tool_names(server)
         assert names == [
             "freshness_check",
+            "get_ecg_detail",
             "get_metric_series",
             "get_trends",
             "get_workout_detail",
+            "list_ecgs",
+            "list_heart_notifications",
             "list_metrics",
+            "list_sleep_sessions",
             "list_workouts",
             "query_day",
             "raw_samples",
         ]
+
+    def test_sleep_sessions_tool_schema(self):
+        """The sleep tool exposes from/to aliases and paging params
+        (mirrors raw_samples schema checks)."""
+        server = build_mcp_server(pool=_FakePool())
+        tool = next(
+            t for t in server._tool_manager.list_tools()
+            if t.name == "list_sleep_sessions"
+        )
+        props = tool.parameters["properties"]
+        assert "from" in props and "to" in props
+        assert "frm" not in props
+        assert "limit" in props and "offset" in props
 
     def test_from_alias_published_in_schema(self):
         server = build_mcp_server(pool=_FakePool())
@@ -169,6 +189,17 @@ class TestBuildMcpServer:
             t for t in server._tool_manager.list_tools() if t.name == "raw_samples"
         )
         props = tool.parameters["properties"]
+        assert "limit" in props and "offset" in props
+
+    def test_workouts_limit_bounds_documented(self):
+        """list_workouts exposes the paging params (run ... §4)."""
+        server = build_mcp_server(pool=_FakePool())
+        tool = next(
+            t for t in server._tool_manager.list_tools() if t.name == "list_workouts"
+        )
+        props = tool.parameters["properties"]
+        assert "from" in props and "to" in props
+        assert "frm" not in props
         assert "limit" in props and "offset" in props
 
     def test_three_resources_registered(self):

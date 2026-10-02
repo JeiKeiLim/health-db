@@ -3,7 +3,7 @@
 Self-hosted Apple Health data platform: the **Health Auto Export (HAE)** iOS app POSTs
 JSON v2 exports to a FastAPI ingest service, which archives every payload verbatim
 (archive-first), normalizes it, and stores it in PostgreSQL. Queries are served by an
-MCP streamable-HTTP server (8 tools + 3 resources, Bearer auth) with a thin CLI wrapper
+MCP streamable-HTTP server (9 tools + 3 resources, Bearer auth) with a thin CLI wrapper
 for dev testing. Runs as a single Docker container next to any PostgreSQL 18 instance.
 
 ```
@@ -27,8 +27,13 @@ MCP clients (Claude, …) ──streamable-http :8100/mcp──► queries.py (s
 
 ### MCP tools
 `query_day(date, metric?)` · `get_metric_series(metric, from, to)` · `list_metrics()` ·
-`list_workouts(from, to)` · `get_workout_detail(id)` · `get_trends(metric, window)` ·
-`freshness_check()` · `raw_samples(metric?, from?, to?, limit, offset)`
+`list_workouts(from?, to?, limit, offset)` — paged (default 500, max 2000; `next_offset`
+None = last page) · `get_workout_detail(id, route_offset?, route_limit?)` — HR
+inline; GPS route paged (default 1000, max 10000; `route_count` + `next_route_offset`
+None = last page) · `get_trends(metric, window)` ·
+`freshness_check()` · `raw_samples(metric?, from?, to?, limit, offset)` ·
+`list_sleep_sessions(from?, to?, limit, offset)` — one row per recognized aggregated-sleep
+record (per-source rows never merged; durations in hours verbatim)
 
 ### MCP resources
 `health://metrics` (catalog) · `health://freshness` · `health://schema`
@@ -37,11 +42,12 @@ MCP clients (Claude, …) ──streamable-http :8100/mcp──► queries.py (s
 ```
 uv run health query-day 2026-09-10
 uv run health metrics
-uv run health workouts --from 2026-09-01 --to 2026-09-10
+uv run health workouts --from 2026-09-01 --to 2026-09-10 --limit 100 --offset 0
 uv run health trends step_count --window 30
 uv run health freshness
 uv run health raw --metric step_count --from 2026-09-01 --to 2026-09-10 --limit 1000
-uv run health routes <workout-id>
+uv run health routes <workout-id> --offset 1000 --limit 1000
+uv run health sleep --from 2026-09-27 --to 2026-09-28 --limit 100 --offset 0
 ```
 JSON to stdout, diagnostics to stderr. Thin wrapper over the same query layer the MCP
 tools use.
@@ -55,8 +61,13 @@ tools use.
 - **Idempotency**: duplicate payloads (same sha256) return `200 {"outcome":"duplicate"}`;
   samples upsert latest-wins on `(metric_id, source_id, ts)`; workouts upsert by HAE
   UUID. Re-posting any chunk is always safe — row counts never change.
-- **Canonical units**: non-canonical-unit samples are skipped (never stored next to
-  canonical rows). The only conversion is kJ→kcal ÷ 4.184. **All workout energies are
+- **Canonical units**: non-canonical-unit samples are converted with an exact
+  factor when one exists, else skipped visibly (counted in the ingest response's
+  `skipped.unit_unconvertible`). Conversion factors (iron law 4, amended
+  2026-09-17-normalizer-audit): lb→kg ÷ 2.20462, st→kg ÷ 0.157473,
+  °F→°C (°F−32)×5/9 (wrist temperature), kJ→kcal ÷ 4.184. Converted rows store
+  the canonical unit string; units with no exact factor are never stored next to
+  canonical rows — they are dropped but always counted. **All workout energies are
   stored in kcal** (`active_energy_kcal`, `total_energy`, `basal_energy`): real HAE v2
   payloads send `activeEnergyBurned`/`totalEnergy` as `{qty, units:'kJ'}` objects and
   `activeEnergy`/`basalEnergy` as per-minute `kJ` point lists, which are summed then
@@ -168,6 +179,25 @@ Automations 1 and 2 are deliberately disjoint to keep hourly payloads small.
 
 History is backfilled through the same ingest endpoint — no SQLite migration.
 
+> **⚠️ Deploy BEFORE backfill.** Never run the full-history backfill against a
+> deployment older than the `parse-everything` normalizer fix
+> (2026-09-17-normalizer-audit). Older deployments store every Watch night's
+> sleep as 0.0 (asleep:0 sentinel), silently drop the `data.ecg` /
+> `data.heartRateNotifications` lanes, and skip lb/st/°F rows — ingesting 8
+> years through them would bake those defects into the archive. Order:
+>
+> 1. Land the fixed code, rebuild, redeploy (`health-migrate` applies
+>    migration 0002).
+> 2. Repair the already-ingested days:
+>    ```sh
+>    docker exec health-db health-replay --dir data/archive --force
+>    ```
+> 3. Verify the repair via MCP before starting the backfill —
+>    `query_day` for 2026-09-15/16/17 on `sleep_analysis` must return
+>    6.21 / 6.34 / 6.37 (not 0.0).
+> 4. Only then run the backfill chunks below (ECG/notifications and unit
+>    conversions are exercised on first ingestion).
+
 1. In HAE: **Manual Export** → JSON v2, per-year date-range chunks (one chunk per year
    of history), all metrics + workouts, Summarize ON, Batch Requests ON.
    Each POST is ≤ 64 MiB (`MAX_PAYLOAD_BYTES`); Batch Requests splits larger exports
@@ -197,6 +227,15 @@ with corrected values while `raw_samples` and `daily_rollups` are unchanged**. I
 idempotent — running it twice changes nothing the second time — and never deletes
 `raw_ingest` rows (the audit row is updated in place with `outcome='repaired'`). It
 reads only from the on-disk archive, so it is safe to run on a live deployment.
+
+### Probe-metric cleanup (resolved 2026-10-01)
+
+The ingest auto-registers unknown metrics, so the test-acceptance probes
+`__probe_metric`/`__probe_metric2` once existed as real rows in the production DB.
+They have been fully purged: samples/rollups/catalog rows deleted, and the 10 probe
+payloads removed from both the `raw_ingest` DB archive and the on-disk archive —
+the resurrection path is gone. No cleanup script exists anymore; a fresh
+`health-replay --dir data/archive --force` cannot re-emit the probes.
 
 ## Post-deploy validation (post-deploy procedure)
 

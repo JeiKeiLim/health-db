@@ -2,7 +2,10 @@
 
 Spec §"CLI wrapper (dev testing — slice 2)": ``uv run health <command>``
 mirrors the core MCP tools (``query-day``, ``metrics``, ``workouts``,
-``trends``, ``freshness``, ``raw``, ``routes``) as a *dev testing* surface —
+``trends``, ``freshness``, ``raw``, ``routes``; run
+2026-09-17-normalizer-audit §7 adds ``ecgs``, ``ecg-detail``, ``hrn``; run
+2026-09-28-mcp-analysis-parity adds ``sleep``) as a
+*dev testing* surface —
 "not the product surface; thin shared query-layer". Accordingly this module
 contains **no SQL and no business logic**: every command funnels through
 :mod:`health_db.queries` (the decomposition interface contract: "queries —
@@ -102,7 +105,12 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[tuple[str, ...], dict[str, object]], ...]
         OPT_METRIC,
     ),
     "metrics": (),
-    "workouts": (OPT_FROM, OPT_TO),
+    "workouts": (
+        OPT_FROM,
+        OPT_TO,
+        (("--limit",), {"type": int, "default": queries.WORKOUT_DEFAULT_LIMIT}),
+        (("--offset",), {"type": int, "default": 0, "help": "0-based page offset"}),
+    ),
     "trends": (
         (("metric",), {"help": "metric name (see the metrics command)"}),
         (
@@ -122,7 +130,59 @@ COMMAND_OPTIONS: dict[str, tuple[tuple[tuple[str, ...], dict[str, object]], ...]
         (("--limit",), {"type": int, "default": queries.RAW_DEFAULT_LIMIT}),
         (("--offset",), {"type": int, "default": 0}),
     ),
-    "routes": ((("id",), {"help": "workout UUID (see the workouts command)"}),),
+    "routes": (
+        (("id",), {"help": "workout UUID (see the workouts command)"}),
+        (
+            ("--offset",),
+            {"type": int, "default": 0, "help": "0-based route page offset"},
+        ),
+        (
+            ("--limit",),
+            {
+                "type": int,
+                "default": queries.ROUTE_DEFAULT_LIMIT,
+                "help": "route page size, max 10000 (default: 1000)",
+            },
+        ),
+    ),
+    "ecgs": (
+        OPT_FROM,
+        OPT_TO,
+        (("--limit",), {"type": int, "default": queries.ECG_HRN_DEFAULT_LIMIT}),
+    ),
+    "ecg-detail": (
+        (("id",), {"help": "ECG session id (see the ecgs command)"}),
+        (
+            ("--voltage-offset",),
+            {"type": int, "default": 0, "help": "0-based voltage page offset"},
+        ),
+        (
+            ("--voltage-limit",),
+            {
+                "type": int,
+                "default": queries.VOLTAGE_DEFAULT_LIMIT,
+                "help": "voltage page size, max 10000 (default: 1000)",
+            },
+        ),
+    ),
+    "hrn": (
+        OPT_FROM,
+        OPT_TO,
+        (("--limit",), {"type": int, "default": queries.ECG_HRN_DEFAULT_LIMIT}),
+    ),
+    "sleep": (
+        OPT_FROM,
+        OPT_TO,
+        (
+            ("--limit",),
+            {
+                "type": int,
+                "default": queries.SLEEP_SESSION_DEFAULT_LIMIT,
+                "help": "page size, max 500 (default: 100)",
+            },
+        ),
+        (("--offset",), {"type": int, "default": 0, "help": "0-based page offset"}),
+    ),
 }
 
 
@@ -159,9 +219,11 @@ def run_metrics(argv: list[str], *, q: object = queries, pool: object | None = N
 
 
 def run_workouts(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
-    """Workouts in an inclusive KST-day range (newest first)."""
+    """Workouts in an inclusive KST-day range (newest first; paged)."""
     args = _arg_parser("workouts").parse_args(argv)
-    result = q.list_workouts(args.frm, args.to, pool=pool)  # type: ignore[attr-defined]
+    result = q.list_workouts(  # type: ignore[attr-defined]
+        args.frm, args.to, limit=args.limit, offset=args.offset, pool=pool
+    )
     emit_json(result)
     return 0
 
@@ -175,7 +237,7 @@ def run_trends(argv: list[str], *, q: object = queries, pool: object | None = No
 
 
 def run_freshness(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
-    """Per-metric latest days, consensus latest_complete_day, stale list."""
+    """Per-metric latest days, consensus latest_complete_day, latest_activity_day, stale list."""
     _arg_parser("freshness").parse_args(argv)
     result = q.freshness_check(pool=pool)  # type: ignore[attr-defined]
     emit_json(result)
@@ -198,15 +260,58 @@ def run_raw(argv: list[str], *, q: object = queries, pool: object | None = None)
 
 
 def run_routes(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
-    """One workout's GPS route points (timestamp order)."""
+    """One workout's GPS route points (paged, timestamp order)."""
     args = _arg_parser("routes").parse_args(argv)
-    result = q.get_workout_detail(args.id, pool=pool)  # type: ignore[attr-defined]
+    result = q.get_workout_detail(  # type: ignore[attr-defined]
+        args.id, route_offset=args.offset, route_limit=args.limit, pool=pool
+    )
+    emit_json(result)
+    return 0
+
+
+def run_ecgs(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
+    """ECG sessions in an inclusive KST-day range (newest first)."""
+    args = _arg_parser("ecgs").parse_args(argv)
+    result = q.list_ecgs(args.frm, args.to, limit=args.limit, pool=pool)  # type: ignore[attr-defined]
+    emit_json(result)
+    return 0
+
+
+def run_ecg_detail(
+    argv: list[str], *, q: object = queries, pool: object | None = None
+) -> int:
+    """One ECG session + a page of its voltage samples (seq order)."""
+    args = _arg_parser("ecg-detail").parse_args(argv)
+    result = q.get_ecg_detail(  # type: ignore[attr-defined]
+        args.id, voltage_offset=args.voltage_offset, voltage_limit=args.voltage_limit,
+        pool=pool,
+    )
+    emit_json(result)
+    return 0
+
+
+def run_hrn(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
+    """Heart-rate-notification events with nested HR/HRV samples (newest first)."""
+    args = _arg_parser("hrn").parse_args(argv)
+    result = q.list_heart_notifications(args.frm, args.to, limit=args.limit, pool=pool)  # type: ignore[attr-defined]
+    emit_json(result)
+    return 0
+
+
+def run_sleep(argv: list[str], *, q: object = queries, pool: object | None = None) -> int:
+    """Sleep-session records with stages over an inclusive KST-day range."""
+    args = _arg_parser("sleep").parse_args(argv)
+    result = q.list_sleep_sessions(  # type: ignore[attr-defined]
+        args.frm, args.to, limit=args.limit, offset=args.offset, pool=pool
+    )
     emit_json(result)
     return 0
 
 
 # Registry driving the top-level parser AND the test that pins the spec's
-# command list (query-day, metrics, workouts, trends, freshness, raw, routes).
+# command list (query-day, metrics, workouts, trends, freshness, raw, routes,
+# + run 2026-09-17-normalizer-audit §7: ecgs, ecg-detail, hrn
+# + run 2026-09-28-mcp-analysis-parity: sleep).
 COMMANDS: dict[str, object] = {
     "query-day": run_query_day,
     "metrics": run_metrics,
@@ -215,6 +320,10 @@ COMMANDS: dict[str, object] = {
     "freshness": run_freshness,
     "raw": run_raw,
     "routes": run_routes,
+    "ecgs": run_ecgs,
+    "ecg-detail": run_ecg_detail,
+    "hrn": run_hrn,
+    "sleep": run_sleep,
 }
 
 
@@ -295,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         queries.UnknownMetric,
         queries.UnknownWorkout,
+        queries.UnknownEcg,
         queries.InvalidParameter,
         ValueError,
     ) as exc:

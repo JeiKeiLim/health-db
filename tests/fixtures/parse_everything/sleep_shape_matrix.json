@@ -1,0 +1,95 @@
+{
+  "_provenance": "Sanitized sleep-shape matrix (run 2026-09-17-normalizer-audit). Shapes mirror tests/acceptance/parse_everything.py and tests/unit/test_normalize.py (census-locked subsets of the audited corpora; research/predecessor-inventory.md section 7). Source names generic ('Apple Watch', 'AutoSleep', 'watch'); values kept only where the rule's precedence depends on them.",
+  "census_note": "census_weight is per lane: how many real corpus rows this single shape stands for. Audited decomposition (research section 7): recent 130 exports = 120 Watch sentinel nights + 8 AutoSleep naps + 2 in-bed-only = 130 sleep points -> 128 sleep_analysis rows kept + 2 in-bed-only split; backfill = 1,150 Watch sentinel nights + 50 mixed-stage nights + 1,000 AutoSleep rows + 300 in-bed-untracked rows = 2,500 sleep points -> 2,200 kept + 300 in-bed-only splits. The census-lock test (tests/unit/test_census_lock.py) asserts sum(weight x outcome) equals those numbers for both lanes; the 'in-bed split' census counts points whose only row is sleep_in_bed (co-emitted in-bed rows on nap/stage shapes are locked per-shape, not in the split census). expected_qty pins the stored qty per emitted row name for value-carrying shapes: the asleep:0 sentinel regression stores qty 0.0 behind unchanged row counts, so counts alone cannot see it — a shape whose expected sleep_analysis qty > 0 must never store 0.0 (anti-scenario 2).",
+  "fixtures": [
+    {
+      "id": "watch_sentinel_night",
+      "expected_qty": { "sleep_analysis": 6.4, "sleep_in_bed": 0 },
+      "desc": "Scenario 1: REST Watch night with asleep:0 sentinel; totalSleep wins (1,150 backfill nights + 120 recent nights)",
+      "point": {
+        "date": "2026-09-17 00:00:00 +0900",
+        "source": "Apple Watch",
+        "asleep": 0,
+        "inBed": 0,
+        "awake": 0.2,
+        "core": 3.8,
+        "deep": 1.0,
+        "rem": 1.6,
+        "totalSleep": 6.4,
+        "sleepStart": "2026-09-16 22:11:12 +0900",
+        "sleepEnd": "2026-09-17 04:58:30 +0900"
+      },
+      "census_weight": { "recent": 120, "backfill": 1150 }
+    },
+    {
+      "id": "mixed_stage_night",
+      "expected_qty": { "sleep_analysis": 8.4, "sleep_in_bed": 0 },
+      "desc": "Scenario 2: Watch mixed-stage night where asleep is a REAL 4th stage; totalSleep = core+deep+rem+asleep exactly (50/50 verified)",
+      "point": {
+        "date": "2024-10-09 00:00:00 +0900",
+        "source": "Apple Watch",
+        "asleep": 1.9,
+        "inBed": 0,
+        "awake": 0.35,
+        "core": 3.0,
+        "deep": 1.1,
+        "rem": 2.2,
+        "totalSleep": 8.2,
+        "sleepStart": "2024-10-08 21:50:00 +0900",
+        "sleepEnd": "2024-10-09 06:20:00 +0900"
+      },
+      "census_weight": { "recent": 0, "backfill": 50 }
+    },
+    {
+      "id": "autosleep_nap",
+      "expected_qty": { "sleep_analysis": 0.58, "sleep_in_bed": 0.58 },
+      "desc": "Scenario 3: AutoSleep row, asleep-only value; the fixture nap carries inBed == asleep (real AutoSleep shape) so the in-bed split co-emits BOTH rows",
+      "point": {
+        "date": "2026-09-17 00:00:00 +0900",
+        "source": "AutoSleep",
+        "asleep": 0.58,
+        "inBed": 0.58,
+        "awake": 0,
+        "core": 0,
+        "deep": 0,
+        "rem": 0,
+        "totalSleep": 0.58,
+        "sleepStart": "2026-09-16 17:35:00 +0900",
+        "sleepEnd": "2026-09-16 18:10:00 +0900"
+      },
+      "census_weight": { "recent": 8, "backfill": 1000 }
+    },
+    {
+      "id": "inbed_only_row",
+      "expected_qty": { "sleep_analysis": 0, "sleep_in_bed": 7.3 },
+      "desc": "Scenario 4: pre-Watch era in-bed-untracked row (all sleep fields 0, inBed>0); emits only sleep_in_bed, zero sleep_analysis rows",
+      "point": {
+        "date": "2018-04-02 00:00:00 +0900",
+        "source": "watch",
+        "asleep": 0,
+        "inBed": 7.3,
+        "awake": 0,
+        "core": 0,
+        "deep": 0,
+        "rem": 0,
+        "totalSleep": 0,
+        "sleepStart": "2018-04-02 00:15:08 +0900",
+        "sleepEnd": "2018-04-02 07:35:04 +0900"
+      },
+      "census_weight": { "recent": 2, "backfill": 300 }
+    },
+    {
+      "id": "no_totalsleep_shape",
+      "expected_qty": { "sleep_analysis": 7.0, "sleep_in_bed": 0 },
+      "desc": "Scenario 9: {date, asleep, core, deep, rem} without totalSleep; loosened recognition keeps it (asleep wins), not a drop",
+      "point": {
+        "date": "2026-09-08",
+        "asleep": 7.0,
+        "core": 3.5,
+        "deep": 1.5,
+        "rem": 2.0
+      },
+      "census_weight": { "recent": 0, "backfill": 0 }
+    }
+  ]
+}

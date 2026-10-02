@@ -90,17 +90,28 @@ def ensure_backfill_range(
 ) -> list[str]:
     """Ensure partitions cover an arbitrary historical range (backfill).
 
-    Monthly, inclusive of both endpoint months. Same advisory lock +
-    ``IF NOT EXISTS`` idempotency as :func:`ensure_partitions`. Returns the
-    ensured partition names in chronological order.
+    Monthly, inclusive of both endpoint months PLUS a one-month margin on
+    each side: ``raw_samples`` is partitioned on the raw UTC ``ts``, but
+    callers pass KST days (:func:`health_db.normalize.day_kst`). A KST
+    day ``D`` spans ``[D-1 15:00Z, D 15:00Z)`` — the earliest UTC
+    timestamps of day ``first_day`` land in the PREVIOUS month's
+    partition (e.g. 2018-04-01 00:00 KST = 2018-03-31 15:00Z → the
+    ``p2018_03`` partition), and a KST-day range that ends on the last
+    day of month M needs M+1's partition for the same reason in
+    reverse. The margin costs two idempotent ``IF NOT EXISTS`` creates
+    and keeps every boundary row insertable. Same advisory lock +
+    ``IF NOT EXISTS`` idempotency as :func:`ensure_partitions`. Returns
+    the ensured partition names in chronological order.
     """
     if last_day < first_day:
         return []
 
     conn.execute(f"SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY})")
     ensured: list[str] = []
-    month_cursor = first_day.replace(day=1)
-    while month_cursor <= last_day:
+    # One-month margin (UTC-vs-KST boundary rows; see docstring).
+    month_cursor = _prev_month(first_day.replace(day=1))
+    last_month = _next_month(last_day.replace(day=1))
+    while month_cursor <= last_month:
         start, end = month_range(month_cursor)
         name = partition_name(month_cursor)
         conn.execute(
@@ -114,3 +125,17 @@ def ensure_backfill_range(
         ensured.append(name)
         month_cursor = end
     return ensured
+
+
+def _prev_month(month_start: date) -> date:
+    """Month containing ``month_start``, shifted back one month."""
+    if month_start.month == 1:
+        return month_start.replace(year=month_start.year - 1, month=12)
+    return month_start.replace(month=month_start.month - 1)
+
+
+def _next_month(month_start: date) -> date:
+    """Month containing ``month_start``, shifted forward one month."""
+    if month_start.month == 12:
+        return month_start.replace(year=month_start.year + 1, month=1)
+    return month_start.replace(month=month_start.month + 1)

@@ -1,0 +1,30 @@
+{
+  "_provenance": "Trimmed ECG session (run 2026-09-17-normalizer-audit, spec section 2). Shape mirrors tests/acceptance/parse_everything.py ECG_SESSION: real backfill structure with a 3-voltage window standing in for the full ~14k-point recording. Timestamps: session start/end are HAE 'yyyy-MM-dd HH:mm:ss Z' strings; voltage dates are UNIX epoch seconds (verified 42/42 sessions \u2014 first voltage == session start \u00b12s under this reading; CF-absolute would yield year-2056 and is wrong for REST ECG). Source is the generic lane name; classification keeps the real corpus value.",
+  "census_note": "The full backfill file carries 42 ecgs sessions and 600,000 ecg_voltages rows; this fixture preserves the shape and epoch semantics, not the counts (spec: trimmed fixtures, acceptance asserts 3 voltages).",
+  "fixtures": [
+    {
+      "id": "ecg_session",
+      "desc": "Scenario 5: session row + 3 voltage points, UNIX-epoch voltage ts, mcV pass-through",
+      "session": {
+        "source": "\uc2ec\uc804\ub3c4",
+        "start": "2025-10-12 10:45:06 +0900",
+        "end": "2025-10-12 10:45:36 +0900",
+        "samplingFrequency": 512,
+        "numberOfVoltageMeasurements": 3,
+        "classification": "\uc815\uc0c1 \ub3d9\uc728 \ub9ac\ub364",
+        "averageHeartRate": 68,
+        "voltageMeasurements": [
+          {"voltage": -10.53, "date": 1760233506.862702, "units": "mcV"},
+          {"voltage": -8.96, "date": 1760233506.864655, "units": "mcV"},
+          {"voltage": -7.15, "date": 1760233506.8666081, "units": "mcV"}
+        ]
+      },
+      "expected": {
+        "session_rows": 1,
+        "voltage_rows": 3,
+        "first_voltage_utc": "2025-10-12T01:45:06.862702+00:00",
+        "note": "first voltage ts == session start \u00b12s (UNIX-epoch reading)"
+      }
+    }
+  ]
+}

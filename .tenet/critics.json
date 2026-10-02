@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "critics": [
+    {
+      "id": "code_critic",
+      "builtin": true,
+      "enabled": true,
+      "full_context": true
+    },
+    {
+      "id": "test_critic",
+      "builtin": true,
+      "enabled": true,
+      "full_context": true
+    },
+    {
+      "id": "interaction_e2e",
+      "builtin": true,
+      "enabled": true,
+      "full_context": false
+    },
+    {
+      "id": "security",
+      "builtin": false,
+      "enabled": true,
+      "stage": "security_critic",
+      "job_type": "critic_eval",
+      "prompt_file": ".tenet/critics/security.md",
+      "full_context": true
+    },
+    {
+      "id": "data-integrity",
+      "builtin": false,
+      "enabled": true,
+      "stage": "data_integrity_critic",
+      "job_type": "critic_eval",
+      "prompt_file": ".tenet/critics/data-integrity.md",
+      "full_context": true
+    }
+  ]
+}

@@ -1,0 +1,546 @@
+# Job Queue
+
+Updated: 2026-09-30T04:14:56.030Z
+
+- [x] Integration: parse-everything acceptance + full unit gate (e2e-1) — 11m 20s
+- [x] Integration: full parity battery (e2e-1) — 28s
+- [x] Final E2E: full gate + deployment handoff doc (e2e-2) — 10m 22s
+- [x] Migration 0002: ECG + notification tables (job-1) — 25m 56s
+- [x] Migration 0003 sleep_sessions (job-1) — 6m 40s
+- [x] Sleep value rule + in-bed split + loosened recognition (job-2) — 2m 50s
+- [x] SKIPPED_KEYS + normalizer session rows (job-2) — 22s
+- [x] Unit-conversion amendment (lb/st/degF) (job-3) — 36m 38s
+- [x] UPSERT_SLEEP_SESSION SQL constant (job-3) — 1m 25s
+- [x] Skip accounting: PayloadReport.skipped + ingest response (job-4) — 35m 46s
+- [x] Pipeline sleep-session lane wiring (job-4) — 11m 24s
+- [x] ECG lane normalizer (pure) (job-5) — 6m 45s
+- [x] queries.list_sleep_sessions read layer (job-5) — 51m 58s
+- [x] HR-notification lane normalizer (pure) (job-6) — 4m 15s
+- [x] MCP tool + CLI health sleep + schema entry (job-6) — 8m 18s
+- [x] Pipeline wiring: lane upserts in one transaction (job-7) — 26m 41s
+- [x] get_workout_detail route paging (job-7) — 45m 10s
+- [x] MCP tools + queries + CLI + schema resource (job-8) — 4m 54s
+- [x] freshness latest_activity_day (job-8) — 20m 57s
+- [x] Fixtures, census lock, docs + doctrine note (job-9) — 19m 5s
+- [x] list_workouts pagination (job-9) — 6m 15s
+- [x] Probe-cleanup runbook script (job-10) — 8m 54s
+- [x] interaction-e2e probe: job-7 lane persistence (retry rubric run) (probe-job-7) — 7m 38s
+- [x] FastAPI app + /api/ingest pipeline (slice-1-api) — 5m 42s
+- [x] Verbatim archive store (iron law) (slice-1-archive) — 7m 19s
+- [x] Token auth + audit (slice-1-auth) — 1m 44s
+- [x] Env config module (slice-1-config) — 4m 32s
+- [x] Integration: slice 1 acceptance suite (slice-1-e2e) — 2m 27s
+- [x] HAE JSON v2 parser/validator (slice-1-payloads) — 1m 8s
+- [x] Malformed/oversize failure semantics (slice-1-quarantine) — 10m 14s
+- [x] Project scaffold (uv, pyproject, ruff, .env.example) (slice-1-scaffold) — 7m 38s
+- [x] Stats + health endpoints (slice-1-stats) — 2m 8s
+- [x] health CLI wrapper over query layer (slice-2-cli) — 16m 39s
+- [x] DB foundation: psycopg3 pool, migrations applier, pg container fixture, health DB check (slice-2-db-config) — 15m 13s
+- [x] Docker deploy + perf test + runbook + README (slice-2-deploy) — 5m 5s
+- [x] Integration: slice 2 full acceptance + perf (slice-2-e2e) — 8m 54s
+- [x] Ingest pipeline: normalize→upsert→rollup, 503+pending on DB outage (slice-2-ingest-pipeline) — 1m 36s
+- [x] MCP streamable-http server: query layer, 8 tools, 3 resources, Bearer (slice-2-mcp-server) — 19m 40s
+- [x] Pure normalizer: units policy, special formats, KST day (slice-2-normalize) — 6m 59s
+- [x] Replay tool: health-replay, dir replay, pending queue, idempotent (slice-2-replay) — 29m 23s
+- [x] PG schema migrations + partition maintenance (slice-2-schema) — 13m 49s
+- [x] eval-mtrwu9u6 — 17s
+- [x] eval-mtrwxneb — 1m 13s
+- [x] eval-mts0eb2f — 23s
+- [x] eval-mts0g98l — 23m 23s !! cancelled by user
+- [x] eval-mts0rt1s — 14m 24s
+- [x] eval-mts5v2jq — 1m 59s
+- [x] code_critic for 3ce8fe5f — 2m 48s
+- [x] test_critic for 3ce8fe5f — 1m 39s
+- [-] interaction_e2e for 3ce8fe5f !! cancelled by user
+- [x] security_critic for 3ce8fe5f — 1m 9s
+- [x] data_integrity_critic for 3ce8fe5f — 1m 34s
+- [x] code_critic for 209b829c — 6m 39s
+- [x] test_critic for 209b829c — 53s
+- [x] interaction_e2e for 209b829c — 1m 24s
+- [x] security_critic for 209b829c — 20s
+- [x] data_integrity_critic for 209b829c — 1m 15s
+- [x] code_critic for 209b829c — 58s
+- [x] test_critic for 209b829c — 44s
+- [x] interaction_e2e for 209b829c — 1m 15s
+- [x] security_critic for 209b829c — 36s
+- [x] data_integrity_critic for 209b829c — 56s
+- [x] code_critic for f05ca364 — 2m 26s
+- [x] test_critic for f05ca364 — 1m 27s
+- [x] interaction_e2e for f05ca364 — 1m 36s
+- [x] security_critic for f05ca364 — 55s
+- [x] data_integrity_critic for f05ca364 — 48s
+- [x] code_critic for f05ca364 — 3m 29s
+- [x] test_critic for f05ca364 — 40s
+- [x] interaction_e2e for f05ca364 — 1m 29s
+- [x] security_critic for f05ca364 — 31s
+- [x] data_integrity_critic for f05ca364 — 1m 27s
+- [x] code_critic for f05ca364 — 1m 51s
+- [x] test_critic for f05ca364 — 40s
+- [x] interaction_e2e for f05ca364 — 38s
+- [x] security_critic for f05ca364 — 44s
+- [x] data_integrity_critic for f05ca364 — 20s
+- [x] code_critic for be7e1820 — 5m 53s
+- [x] test_critic for be7e1820 — 34s
+- [x] interaction_e2e for be7e1820 — 1m 49s
+- [x] security_critic for be7e1820 — 1m 29s
+- [x] data_integrity_critic for be7e1820 — 53s
+- [x] code_critic for be7e1820 — 1m 3s
+- [x] test_critic for be7e1820 — 39s
+- [x] interaction_e2e for be7e1820 — 1m 8s
+- [x] security_critic for be7e1820 — 52s
+- [x] data_integrity_critic for be7e1820 — 34s
+- [x] code_critic for be7e1820 — 2m 14s
+- [x] test_critic for be7e1820 — 1m 12s
+- [x] interaction_e2e for be7e1820 — 6m 47s
+- [x] security_critic for be7e1820 — 59s
+- [x] data_integrity_critic for be7e1820 — 1m 2s
+- [x] code_critic for bba1e3ce — 6m 3s
+- [x] test_critic for bba1e3ce — 1m 0s
+- [x] interaction_e2e for bba1e3ce — 1m 21s
+- [x] security_critic for bba1e3ce — 55s
+- [x] data_integrity_critic for bba1e3ce — 2m 21s
+- [x] code_critic for bba1e3ce — 1m 25s
+- [x] test_critic for bba1e3ce — 1m 22s
+- [x] interaction_e2e for bba1e3ce — 4m 28s
+- [x] security_critic for bba1e3ce — 1m 8s
+- [x] data_integrity_critic for bba1e3ce — 2m 18s
+- [x] code_critic for bba1e3ce — 1m 11s
+- [x] test_critic for bba1e3ce — 1m 4s
+- [x] interaction_e2e for bba1e3ce — 1m 40s
+- [x] security_critic for bba1e3ce — 1m 38s
+- [x] data_integrity_critic for bba1e3ce — 1m 36s
+- [x] code_critic scoped: archive.py product-correctness — 24s
+- [x] test_critic scoped: archive regression tests — 30s
+- [x] interaction_e2e scoped: archive CLI behavior — 33s
+- [x] interaction_e2e scoped retry: archive surface, minimal — 15s
+- [x] code_critic for bee5f51f — 1m 31s
+- [x] test_critic for bee5f51f — 1m 11s
+- [x] interaction_e2e for bee5f51f — 2m 19s
+- [x] security_critic for bee5f51f — 33s
+- [x] data_integrity_critic for bee5f51f — 51s
+- [x] code_critic for bee5f51f — 52s
+- [x] test_critic for bee5f51f — 2m 6s
+- [x] interaction_e2e for bee5f51f — 1m 50s
+- [x] security_critic for bee5f51f — 46s
+- [x] data_integrity_critic for bee5f51f — 47s
+- [x] interaction_e2e scoped retry: stats endpoints, minimal — 18s
+- [x] code_critic for 2fa9f9a3 — 1m 44s
+- [x] test_critic for 2fa9f9a3 — 1m 38s
+- [x] interaction_e2e for 2fa9f9a3 — 1m 16s
+- [x] security_critic for 2fa9f9a3 — 1m 40s
+- [x] data_integrity_critic for 2fa9f9a3 — 50s
+- [x] code_critic for 2668f375 — 4m 0s
+- [x] test_critic for 2668f375 — 1m 52s
+- [x] interaction_e2e for 2668f375 — 55s
+- [x] security_critic for 2668f375 — 3m 32s
+- [x] data_integrity_critic for 2668f375 — 5m 24s
+- [x] code_critic for 2668f375 — 3m 13s
+- [x] test_critic for 2668f375 — 32s
+- [x] interaction_e2e for 2668f375 — 1m 8s
+- [x] security_critic for 2668f375 — 2m 20s
+- [x] data_integrity_critic for 2668f375 — 1m 59s
+- [x] code_critic for 2668f375 — 3m 42s
+- [x] test_critic for 2668f375 — 1m 12s
+- [x] interaction_e2e for 2668f375 — 4m 11s
+- [x] security_critic for 2668f375 — 1m 14s
+- [x] data_integrity_critic for 2668f375 — 3m 44s
+- [x] code_critic for 2668f375 — 12m 21s
+- [x] test_critic for 2668f375 — 2m 42s
+- [x] interaction_e2e for 2668f375 — 1m 22s
+- [x] security_critic for 2668f375 — 3m 59s
+- [x] data_integrity_critic for 2668f375 — 3m 1s
+- [x] interaction_e2e scoped retry: api ingest pipeline, minimal — 29s
+- [x] code_critic for 36f0f17f — 3m 36s
+- [x] test_critic for 36f0f17f — 43s
+- [x] interaction_e2e for 36f0f17f — 2m 7s
+- [x] security_critic for 36f0f17f — 1m 2s
+- [x] data_integrity_critic for 36f0f17f — 1m 33s
+- [x] code_critic for b2892710 — 16m 33s
+- [x] test_critic for b2892710 — 7m 17s !! cancelled by user
+- [-] interaction_e2e for b2892710 !! cancelled by user
+- [-] security_critic for b2892710 !! cancelled by user
+- [-] data_integrity_critic for b2892710 !! cancelled by user
+- [x] code_critic for b2892710 — 30m 35s
+- [x] test_critic for b2892710 — 12m 40s
+- [x] interaction_e2e for b2892710 — 19m 54s
+- [x] security_critic for b2892710 — 2m 29s
+- [x] data_integrity_critic for b2892710 — 5m 43s
+- [x] code_critic for b2892710 — 31m 54s
+- [x] test_critic for b2892710 — 25m 44s
+- [x] interaction_e2e for b2892710 — 9m 5s
+- [x] security_critic for b2892710 — 3m 47s
+- [x] data_integrity_critic for b2892710 — 6m 17s
+- [x] code_critic for 21392fba — 9m 3s
+- [x] test_critic for 21392fba — 5m 12s
+- [x] interaction_e2e for 21392fba — 5m 47s
+- [x] security_critic for 21392fba — 1m 1s
+- [x] data_integrity_critic for 21392fba — 1m 47s
+- [x] code_critic for c7e407f9 — 9m 31s
+- [-] test_critic for c7e407f9 — 20s !! cancelled by user
+- [-] interaction_e2e for c7e407f9 !! cancelled by user
+- [-] security_critic for c7e407f9 !! cancelled by user
+- [-] data_integrity_critic for c7e407f9 !! cancelled by user
+- [x] code_critic for b2892710 — 13m 33s
+- [x] test_critic for b2892710 — 9m 30s
+- [x] interaction_e2e for b2892710 — 1m 32s
+- [x] security_critic for b2892710 — 12m 59s
+- [x] data_integrity_critic for b2892710 — 15m 12s
+- [x] interaction_e2e split A: /api/health endpoint, minimal — 1m 0s
+- [x] interaction_e2e split B: health-migrate CLI, minimal — 39s
+- [x] code_critic for c7e407f9 — 7m 29s
+- [x] test_critic for c7e407f9 — 10m 13s
+- [x] interaction_e2e for c7e407f9 — 18m 18s
+- [x] security_critic for c7e407f9 — 6m 53s
+- [x] data_integrity_critic for c7e407f9 — 1m 25s
+- [x] code_critic for fb46aec4 — 34m 23s
+- [x] test_critic for fb46aec4 — 64m 11s
+- [x] interaction_e2e for fb46aec4 — 2m 18s
+- [x] security_critic for fb46aec4 — 36m 54s
+- [x] data_integrity_critic for fb46aec4 — 20m 40s
+- [x] code_critic for fb46aec4 — 22s
+- [x] test_critic for fb46aec4 — 4m 26s
+- [x] interaction_e2e for fb46aec4 — 1m 4s
+- [x] security_critic for fb46aec4 — 2m 35s
+- [x] data_integrity_critic for fb46aec4 — 3m 17s
+- [x] code_critic for 8db287f8 — 21s
+- [x] test_critic for 8db287f8 — 27s
+- [x] interaction_e2e for 8db287f8 — 5m 42s
+- [x] security_critic for 8db287f8 — 25s
+- [x] data_integrity_critic for 8db287f8 — 21m 6s
+- [x] code_critic for 992356c4 — 43m 17s
+- [x] test_critic for 992356c4 — 3m 56s
+- [!] interaction_e2e for 992356c4 — 120m 1s !! opencode invocation timed out after 7200000ms
+- [-] security_critic for 992356c4 !! cancelled by user
+- [-] data_integrity_critic for 992356c4 !! cancelled by user
+- [x] code_critic for 992356c4 — 20m 16s
+- [x] test_critic for 992356c4 — 1m 25s
+- [x] interaction_e2e for 992356c4 — 4m 29s
+- [x] security_critic for 992356c4 — 3m 23s
+- [x] data_integrity_critic for 992356c4 — 3m 24s
+- [x] code_critic for 2598e537 — 29s
+- [x] test_critic for 2598e537 — 36m 1s
+- [x] interaction_e2e for 2598e537 — 1m 0s
+- [x] security_critic for 2598e537 — 2m 23s
+- [x] data_integrity_critic for 2598e537 — 1m 19s
+- [x] code_critic for 17349392 — 16m 57s
+- [x] test_critic for 17349392 — 5m 47s
+- [x] interaction_e2e for 17349392 — 1m 37s
+- [!] security_critic for 17349392 — 120m 0s !! opencode invocation timed out after 7200000ms
+- [-] data_integrity_critic for 17349392 !! cancelled by user
+- [x] code_critic for 17349392 — 16m 57s
+- [x] test_critic for 17349392 — 2m 29s
+- [x] interaction_e2e for 17349392 — 3m 48s
+- [x] security_critic for 17349392 — 57s
+- [x] data_integrity_critic for 17349392 — 2m 21s
+- [x] code_critic for 17349392 — 4m 17s
+- [x] test_critic for 17349392 — 3m 13s
+- [x] interaction_e2e for 17349392 — 18s
+- [x] security_critic for 17349392 — 32s
+- [x] data_integrity_critic for 17349392 — 1m 40s
+- [x] code_critic for 9bb0cc11 — 11m 30s
+- [x] test_critic for 9bb0cc11 — 7m 55s
+- [x] interaction_e2e for 9bb0cc11 — 9m 7s
+- [x] security_critic for 9bb0cc11 — 8m 33s
+- [x] data_integrity_critic for 9bb0cc11 — 2m 16s
+- [x] data-integrity split A: pipeline+rollups for 9bb0cc11 — 21s
+- [x] data-integrity split B: schema+normalize+replay for 9bb0cc11 — 1m 57s
+- [x] security split A: auth+archive+config for 9bb0cc11 — 1m 23s
+- [x] security split B: secrets+PHI+deps for 9bb0cc11 — 2m 9s
+- [x] fix-workout-normalizer — 2m 41s
+- [x] code_critic for 34b9c6a3 — 9m 27s
+- [x] test_critic for 34b9c6a3 — 9m 45s
+- [x] interaction_e2e for 34b9c6a3 — 16m 12s
+- [x] data_integrity_critic for 34b9c6a3 — 5m 58s
+- [x] code_critic for 34b9c6a3 — 1m 31s
+- [x] test_critic for 34b9c6a3 — 46s
+- [x] interaction_e2e for 34b9c6a3 — 7m 55s
+- [x] security_critic for 34b9c6a3 — 6m 5s
+- [x] data_integrity_critic for 34b9c6a3 — 5m 52s
+- [x] code_critic for 34b9c6a3 — 26s
+- [x] test_critic for 34b9c6a3 — 7s
+- [x] interaction_e2e for 34b9c6a3 — 8m 16s
+- [x] security_critic for 34b9c6a3 — 3m 1s
+- [x] data_integrity_critic for 34b9c6a3 — 11m 37s
+- [x] code split A: normalize.py scope-fit for fix-workout-normalizer — 2m 50s
+- [x] code split B: pipeline/replay/helpers scope-fit for fix-workout-normalizer — 6m 0s
+- [x] test split A: unit coverage for real workout shapes — 22s
+- [x] test split B: acceptance repair-path guards — 5m 25s
+- [x] security critic retry: fix-workout-normalizer — 1m 17s
+- [x] interaction_e2e split: live repair + MCP/CLI surface — 2m 3s
+- [x] data-integrity split A: workout field correctness + units — 1m 31s
+- [x] data-integrity split B: repair + rollup idempotency — 12m 36s
+- [x] test split A rerun: unit shape coverage — 15s
+- [x] code_critic for 34b9c6a3 — 3m 8s
+- [x] test_critic for 34b9c6a3 — 6m 34s
+- [x] interaction_e2e for 34b9c6a3 — 5m 46s
+- [x] security_critic for 34b9c6a3 — 3m 25s
+- [x] data_integrity_critic for 34b9c6a3 — 6m 18s
+- [x] code_critic for 34b9c6a3 — 4m 34s
+- [x] test_critic for 34b9c6a3 — 1m 53s
+- [x] interaction_e2e for 34b9c6a3 — 6m 20s
+- [x] security_critic for 34b9c6a3 — 1m 48s
+- [x] data_integrity_critic for 34b9c6a3 — 5m 46s
+- [x] test-critic unit coverage micro-check — 53s
+- [x] test-critic determinism guard teeth micro-check — 18s
+- [x] eval-mu51yalx — 21s
+- [x] eval-mu520mxv — 24s
+- [x] eval-mu52dsgh — 3m 37s
+- [x] eval-mu52k8ag — 1m 41s
+- [x] eval-mu52n3lr — 2m 24s
+- [x] code_critic for 64f52d4c — 4m 8s
+- [x] test_critic for 64f52d4c — 20m 9s
+- [x] interaction_e2e for 64f52d4c — 74m 17s
+- [x] security_critic for 64f52d4c — 62m 46s
+- [x] parse_everything_critic for 64f52d4c — 1m 8s
+- [x] code_critic for bad96b04 — 3m 16s
+- [x] test_critic for bad96b04 — 4m 55s
+- [x] interaction_e2e for bad96b04 — 2m 39s
+- [x] security_critic for bad96b04 — 8m 31s
+- [x] parse_everything_critic for bad96b04 — 17m 19s
+- [x] code_critic for 549c133e — 11m 6s
+- [x] test_critic for 549c133e — 5m 40s
+- [x] interaction_e2e for 549c133e — 12m 25s
+- [x] security_critic for 549c133e — 1m 23s
+- [x] parse_everything_critic for 549c133e — 14m 0s
+- [x] code_critic for 0963bdbe — 74m 18s
+- [x] test_critic for 0963bdbe — 28m 49s
+- [x] interaction_e2e for 0963bdbe — 18m 1s
+- [x] security_critic for 0963bdbe — 1m 54s
+- [x] parse_everything_critic for 0963bdbe — 25m 20s
+- [!] code_critic for 0963bdbe — 14m 11s !! opencode exited with code 1
+- [-] test_critic for 0963bdbe !! cancelled by user
+- [-] interaction_e2e for 0963bdbe !! cancelled by user
+- [-] security_critic for 0963bdbe !! cancelled by user
+- [-] parse_everything_critic for 0963bdbe !! cancelled by user
+- [x] code_critic for 0963bdbe — 65m 41s
+- [x] test_critic for 0963bdbe — 22m 55s
+- [x] interaction_e2e for 0963bdbe — 3m 22s
+- [x] security_critic for 0963bdbe — 13s
+- [x] parse_everything_critic for 0963bdbe — 5m 31s
+- [x] code_critic for 0963bdbe — 16m 36s
+- [x] test_critic for 0963bdbe — 12m 33s
+- [x] interaction_e2e for 0963bdbe — 18m 36s
+- [x] security_critic for 0963bdbe — 1m 23s
+- [x] parse_everything_critic for 0963bdbe — 13m 2s
+- [x] code_critic for 5bd9678d — 29s
+- [x] test_critic for 5bd9678d — 5m 45s
+- [x] interaction_e2e for 5bd9678d — 3m 59s
+- [x] security_critic for 5bd9678d — 1m 26s
+- [x] parse_everything_critic for 5bd9678d — 15m 59s
+- [x] code_critic for 5bd9678d — 3m 16s
+- [x] test_critic for 5bd9678d — 2m 42s
+- [x] interaction_e2e for 5bd9678d — 5m 1s
+- [x] security_critic for 5bd9678d — 2m 6s
+- [x] parse_everything_critic for 5bd9678d — 2m 49s
+- [x] code_critic for 839f3968 — 7m 30s
+- [x] test_critic for 839f3968 — 1m 57s
+- [x] interaction_e2e for 839f3968 — 7m 26s
+- [x] security_critic for 839f3968 — 1m 31s
+- [x] parse_everything_critic for 839f3968 — 51s
+- [x] code_critic for 839f3968 — 6m 51s
+- [x] test_critic for 839f3968 — 1m 44s
+- [x] interaction_e2e for 839f3968 — 5m 2s
+- [x] security_critic for 839f3968 — 5m 3s
+- [x] parse_everything_critic for 839f3968 — 4m 42s
+- [x] code_critic for 839f3968 — 4m 1s
+- [x] test_critic for 839f3968 — 4m 7s
+- [x] interaction_e2e for 839f3968 — 5m 8s
+- [x] security_critic for 839f3968 — 4m 51s
+- [x] parse_everything_critic for 839f3968 — 5m 35s
+- [x] code_critic for 909384a9 — 20m 51s
+- [x] test_critic for 909384a9 — 8m 19s
+- [!] interaction_e2e for 909384a9 — 2m 42s !! opencode exited with code unknown
+- [x] security_critic for 909384a9 — 7m 5s
+- [x] parse_everything_critic for 909384a9 — 20m 23s
+- [x] code_critic for 909384a9 — 17m 33s
+- [x] test_critic for 909384a9 — 11m 17s
+- [x] interaction_e2e for 909384a9 — 14m 26s
+- [x] security_critic for 909384a9 — 5m 55s
+- [x] parse_everything_critic for 909384a9 — 9m 7s
+- [x] code_critic for 8a72f30e — 25m 56s
+- [x] test_critic for 8a72f30e — 26m 19s
+- [x] interaction_e2e for 8a72f30e — 39m 35s
+- [x] security_critic for 8a72f30e — 6m 9s
+- [x] parse_everything_critic for 8a72f30e — 1m 40s
+- [x] code_critic for 8a72f30e — 14m 45s
+- [x] test_critic for 8a72f30e — 12m 48s
+- [!] interaction_e2e for 8a72f30e — 5m 29s !! opencode exited with code 1
+- [!] security_critic for 8a72f30e — 7m 14s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
+- [-] parse_everything_critic for 8a72f30e !! cancelled by user
+- [!] interaction_e2e for 8a72f30e (retry) — 4m 39s !! ENOSPC: no space left on device, open '<repo>/.tenet/status/status.md'
+- [x] code_critic for 8a72f30e — 20m 5s
+- [x] test_critic for 8a72f30e — 9m 31s
+- [x] interaction_e2e for 8a72f30e — 11m 46s
+- [x] security_critic for 8a72f30e — 10m 14s
+- [x] parse_everything_critic for 8a72f30e — 10m 32s
+- [x] code_critic for 8a72f30e — 15m 2s
+- [x] test_critic for 8a72f30e — 9m 31s
+- [x] interaction_e2e for 8a72f30e — 14m 23s
+- [x] security_critic for 8a72f30e — 16m 40s
+- [x] parse_everything_critic for 8a72f30e — 8m 28s
+- [x] code_critic for 8a72f30e — 3m 59s
+- [x] test_critic for 8a72f30e — 6m 6s
+- [x] interaction_e2e for 8a72f30e — 3m 10s
+- [x] security_critic for 8a72f30e — 4m 30s
+- [x] parse_everything_critic for 8a72f30e — 6m 19s
+- [x] code_critic for f8cf6f19 — 35m 6s
+- [x] test_critic for f8cf6f19 — 5m 40s
+- [x] interaction_e2e for f8cf6f19 — 7m 14s
+- [x] security_critic for f8cf6f19 — 16m 0s
+- [x] parse_everything_critic for f8cf6f19 — 5m 54s
+- [x] code_critic for f8cf6f19 — 28m 43s
+- [x] test_critic for f8cf6f19 — 6m 24s
+- [x] interaction_e2e for f8cf6f19 — 13m 0s
+- [x] security_critic for f8cf6f19 — 2m 19s
+- [x] parse_everything_critic for f8cf6f19 — 19m 29s
+- [x] code_critic for c07bf106 — 5m 49s
+- [x] test_critic for c07bf106 — 8m 1s
+- [x] interaction_e2e for c07bf106 — 7m 1s
+- [x] security_critic for c07bf106 — 7m 16s
+- [x] parse_everything_critic for c07bf106 — 10m 34s
+- [x] code_critic for c07bf106 — 9m 10s
+- [x] test_critic for c07bf106 — 13m 56s
+- [x] interaction_e2e for c07bf106 — 6m 36s
+- [x] security_critic for c07bf106 — 9m 15s
+- [x] parse_everything_critic for c07bf106 — 4m 42s
+- [x] code_critic for e0267826 — 14m 18s
+- [x] test_critic for e0267826 — 4m 42s
+- [x] interaction_e2e for e0267826 — 4m 29s
+- [x] security_critic for e0267826 — 27m 23s
+- [x] parse_everything_critic for e0267826 — 6m 28s
+- [x] code_critic for e0267826 — 6m 33s
+- [x] test_critic for e0267826 — 7m 59s
+- [x] interaction_e2e for e0267826 — 22s
+- [x] security_critic for e0267826 — 51s
+- [x] parse_everything_critic for e0267826 — 11m 7s
+- [x] eval-mukx25rj — 56s
+- [x] eval-mukx4vg2 — 15s
+- [x] eval-mukx82yo — 44s
+- [x] code_critic for 86202ea1 — 14m 6s
+- [x] test_critic for 86202ea1 — 3m 58s
+- [x] interaction_e2e for 86202ea1 — 10m 14s
+- [x] security_critic for 86202ea1 — 1m 10s
+- [x] data_integrity_critic for 86202ea1 — 2m 34s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 12m 14s
+- [x] code_critic for 86202ea1 — 1m 13s
+- [x] test_critic for 86202ea1 — 1m 45s
+- [x] interaction_e2e for 86202ea1 — 1m 37s
+- [x] security_critic for 86202ea1 — 26s
+- [x] data_integrity_critic for 86202ea1 — 59s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 59s
+- [x] code_critic for 86202ea1 — 49s
+- [x] test_critic for 86202ea1 — 26s
+- [x] interaction_e2e for 86202ea1 — 1m 13s
+- [x] security_critic for 86202ea1 — 41s
+- [x] data_integrity_critic for 86202ea1 — 23s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 1m 42s
+- [x] code_critic for 86202ea1 — 3m 25s
+- [x] test_critic for 86202ea1 — 1m 36s
+- [x] interaction_e2e for 86202ea1 — 2m 24s
+- [x] security_critic for 86202ea1 — 1m 11s
+- [x] data_integrity_critic for 86202ea1 — 1m 0s
+- [x] sleep_session_fidelity_critic for 86202ea1 — 1m 15s
+- [x] code_critic for 642b50a9 — 19m 21s
+- [x] test_critic for 642b50a9 — 5m 12s
+- [x] interaction_e2e for 642b50a9 — 7m 11s
+- [x] security_critic for 642b50a9 — 57m 2s
+- [x] data_integrity_critic for 642b50a9 — 17m 56s
+- [x] sleep_session_fidelity_critic for 642b50a9 — 14m 45s
+- [x] data-integrity slice 1: idempotency+upsert identity (scopes to job-2 diff) — 23s
+- [x] data-integrity slice 2: day-semantic+skip accounting (scopes to job-2 diff) — 25s
+- [x] code_critic for 642b50a9 — 14m 49s
+- [x] test_critic for 642b50a9 — 1m 12s
+- [x] interaction_e2e for 642b50a9 — 6m 7s
+- [x] security_critic for 642b50a9 — 1m 46s
+- [x] data_integrity_critic for 642b50a9 — 2m 53s
+- [x] sleep_session_fidelity_critic for 642b50a9 — 1m 18s
+- [x] code_critic for 642b50a9 — 20s
+- [x] test_critic for 642b50a9 — 17s
+- [x] interaction_e2e for 642b50a9 — 7m 51s
+- [x] security_critic for 642b50a9 — 22s
+- [x] data_integrity_critic for 642b50a9 — 43s
+- [x] sleep_session_fidelity_critic for 642b50a9 — 19s
+- [x] code_critic for ad6604a9 — 4m 14s
+- [x] test_critic for ad6604a9 — 5m 59s
+- [x] interaction_e2e for ad6604a9 — 7m 3s
+- [x] security_critic for ad6604a9 — 7m 30s
+- [x] data_integrity_critic for ad6604a9 — 8m 58s
+- [x] sleep_session_fidelity_critic for ad6604a9 — 5m 28s
+- [x] code_critic for ad6604a9 — 1m 16s
+- [x] test_critic for ad6604a9 — 1m 17s
+- [x] interaction_e2e for ad6604a9 — 25m 1s
+- [x] security_critic for ad6604a9 — 51s
+- [x] data_integrity_critic for ad6604a9 — 1m 10s
+- [x] sleep_session_fidelity_critic for ad6604a9 — 1m 3s
+- [x] code_critic for 77c1e374 — 7m 38s
+- [x] test_critic for 77c1e374 — 36m 17s
+- [x] interaction_e2e for 77c1e374 — 9m 46s
+- [x] security_critic for 77c1e374 — 23m 34s
+- [x] data_integrity_critic for 77c1e374 — 29m 35s
+- [x] sleep_session_fidelity_critic for 77c1e374 — 24m 56s
+- [x] code_critic for 77c1e374 — 32s
+- [x] test_critic for 77c1e374 — 19m 41s
+- [x] interaction_e2e for 77c1e374 — 33m 3s
+- [x] security_critic for 77c1e374 — 26m 15s
+- [x] data_integrity_critic for 77c1e374 — 14m 29s
+- [x] sleep_session_fidelity_critic for 77c1e374 — 50s
+- [x] code_critic for 535c52da — 18m 49s
+- [x] test_critic for 535c52da — 10m 19s
+- [x] interaction_e2e for 535c52da — 12m 19s
+- [x] security_critic for 535c52da — 30m 32s
+- [x] data_integrity_critic for 535c52da — 11m 44s
+- [!] sleep_session_fidelity_critic for 535c52da — 120m 0s !! opencode invocation timed out after 7200000ms
+- [x] sleep-fidelity slice A: row mapping + recognition parity (job-5) — 23s
+- [x] sleep-fidelity slice B: acceptance scenario coverage (job-5) — 1m 55s
+- [x] code_critic for 2170538e — 7m 16s
+- [x] test_critic for 2170538e — 21m 27s
+- [x] interaction_e2e for 2170538e — 24m 18s
+- [x] security_critic for 2170538e — 19m 46s
+- [x] data_integrity_critic for 2170538e — 7m 43s
+- [x] sleep_session_fidelity_critic for 2170538e — 67m 40s
+- [x] e2e slice: bounded live-surface probes (job-6) — 7m 9s
+- [x] code_critic for e10dd304 — 27m 1s
+- [x] test_critic for e10dd304 — 6m 36s
+- [x] interaction_e2e for e10dd304 — 9m 38s
+- [x] security_critic for e10dd304 — 12m 27s
+- [x] data_integrity_critic for e10dd304 — 15m 35s
+- [x] sleep_session_fidelity_critic for e10dd304 — 3m 50s
+- [x] code_critic for 7dfac2b6 — 11m 25s
+- [x] test_critic for 7dfac2b6 — 14m 47s
+- [x] interaction_e2e for 7dfac2b6 — 6m 43s
+- [x] security_critic for 7dfac2b6 — 9m 31s
+- [x] data_integrity_critic for 7dfac2b6 — 14m 1s
+- [x] sleep_session_fidelity_critic for 7dfac2b6 — 42s
+- [x] code_critic for 581b2fbb — 3m 28s
+- [x] test_critic for 581b2fbb — 5m 0s
+- [x] interaction_e2e for 581b2fbb — 1m 2s
+- [x] security_critic for 581b2fbb — 2m 15s
+- [x] data_integrity_critic for 581b2fbb — 37s
+- [x] sleep_session_fidelity_critic for 581b2fbb — 2m 54s
+- [x] e2e slice A: MCP-tool probe (job-9) — 1m 9s
+- [x] e2e slice B: CLI probe (job-9) — 16s
+- [x] code_critic for 581b2fbb — 23s
+- [x] test_critic for 581b2fbb — 33s
+- [x] interaction_e2e for 581b2fbb — 12m 19s
+- [x] security_critic for 581b2fbb — 2m 30s
+- [x] data_integrity_critic for 581b2fbb — 22s
+- [x] sleep_session_fidelity_critic for 581b2fbb — 13m 41s
+- [x] e2e slice: CLI + fresh-server MCP probe (job-9, rerun) — 1m 1s
+- [x] code_critic for 8ed70b09 — 10m 31s
+- [x] test_critic for 8ed70b09 — 10m 37s
+- [x] interaction_e2e for 8ed70b09 — 8m 40s
+- [x] security_critic for 8ed70b09 — 7m 1s
+- [x] data_integrity_critic for 8ed70b09 — 7m 22s
+- [x] sleep_session_fidelity_critic for 8ed70b09 — 4m 47s
+- [x] code_critic for 8ed70b09 — 5m 18s
+- [x] test_critic for 8ed70b09 — 9m 29s
+- [x] interaction_e2e for 8ed70b09 — 5m 51s
+- [x] security_critic for 8ed70b09 — 5m 32s
+- [x] data_integrity_critic for 8ed70b09 — 5m 29s
+- [x] sleep_session_fidelity_critic for 8ed70b09 — 4m 17s
+- [x] code_critic for fdc9839c — 27s
+- [x] test_critic for fdc9839c — 11m 5s
+- [x] interaction_e2e for fdc9839c — 14s
+- [x] security_critic for fdc9839c — 31m 20s
+- [x] data_integrity_critic for fdc9839c — 12m 36s
+- [x] sleep_session_fidelity_critic for fdc9839c — 30m 29s

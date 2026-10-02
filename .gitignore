@@ -10,7 +10,6 @@ dist/
 .DS_Store
 
 # personal workflow/agent config — kept local, not part of the project
-.tenet/
 backlog/
 .claude/
 .agents/
@@ -18,3 +17,10 @@ backlog/
 opencode.json
 .mcp.json
 AGENTS.md
+
+# Tenet live SQLite runtime state. Do not track this in Git.
+.tenet/.state/
+.tenet/state.db
+
+# session artifacts
+opencode_session.txt

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>health-db — Final Product View</title>
+<style>
+  body { font-family: "SF Mono", Menlo, monospace; background: #0f172a; color: #e2e8f0; margin: 2rem; font-size: 13px; }
+  h1 { font-family: -apple-system, sans-serif; font-size: 1.25rem; }
+  h2 { font-family: -apple-system, sans-serif; font-size: 0.9rem; color: #94a3b8; font-weight: 400; }
+  .cols { display: flex; gap: 1.5rem; }
+  .panel { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 1rem; flex: 1; min-width: 0; }
+  .panel h3 { margin: 0 0 0.5rem; font-size: 0.8rem; color: #38bdf8; font-weight: 600; }
+  pre { background: #0b1120; border-radius: 6px; padding: 0.7rem; overflow-x: auto; font-size: 11.5px; line-height: 1.5; margin: 0; }
+  .ok { color: #22c55e; } .warn { color: #f59e0b; } .dim { color: #64748b; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { color: #94a3b8; text-align: left; font-weight: 500; border-bottom: 1px solid #334155; padding: 4px 6px; }
+  td { border-bottom: 1px solid #1e293b; padding: 4px 6px; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 99px; font-size: 10px; }
+  .b-green { background: #14532d; color: #4ade80; } .b-blue { background: #172554; color: #60a5fa; } .b-amber { background: #451a03; color: #fbbf24; }
+</style>
+</head>
+<body>
+<h1>health-db — Final Product</h1>
+<h2>What the user actually sees when both slices ship: an ingest endpoint reporting live syncs, and an MCP surface agents query. No web UI — terminal/JSON is the interface.</h2>
+
+<div class="cols">
+  <div class="panel">
+    <h3>Ingest (HAE &rarr; service) — live sync monitor via curl</h3>
+<pre><span class="dim">$ curl -s http://server:8000/api/ingest/stats -H "X-Ingest-Token: &hellip;"</span>
+{
+  "received":     <span class="ok">1284</span>,
+  "stored":       <span class="ok">1261</span>,
+  "duplicate":    21,
+  "quarantined":  2,
+  "replayed":     0,
+  "last_received_at": "2026-09-08T09:59:41+00:00",
+  "last_automation":  "metrics-hr-steps (minutes)"
+}
+
+<span class="dim">$ curl -s http://server:8000/api/health</span>
+{"status": "ok", "db": "up", "version": "1.3.0"}
+</pre>
+    <h3 style="margin-top:1rem">MCP client session (Claude / agent)</h3>
+<pre>&gt; list_metrics()
+[{"name": "step_count", "display_name": "Step Count",
+  "unit": "count", "is_cumulative": true,
+  "coverage": "the full-history span",
+  "last_day": "2026-09-08"}, &hellip; 35 more]
+
+&gt; get_metric_series("step_count", "2026-06-10", "2026-09-08")
+{"metric": "step_count", "points": 90, "took_ms": <span class="ok">41</span>,
+ "days": [{"day": "2026-09-08", "sum": 10211, &hellip;}]}
+
+&gt; freshness_check()
+{"latest_complete_day": "2026-09-07",
+ "stale": ["vo2_max (2 days behind)"], "healthy": true}
+</pre>
+  </div>
+
+  <div class="panel">
+    <h3>CLI wrapper (same query layer, dev surface)</h3>
+<pre><span class="dim">$ uv run health query --date 2026-09-07</span>
+[{"metric": "Step Count", "day": "2026-09-07",
+  "sum": 8413, "avg": 5.8, "min": 0, "max": 104,
+  "count": 1440, "unit": "count"},
+ {"metric": "Heart Rate", "day": "2026-09-07",
+  "sum": 95610, "avg": 66.4, "min": 52, "max": 148,
+  "count": 1440, "unit": "count/min"}, &hellip;]
+
+<span class="dim">$ uv run health workouts --from 2026-09-01 --to 2026-09-08</span>
+[{"id": "CC8B17E2-...", "name": "Running", "start_ts": "2026-09-05 19:07",
+  "duration_sec": 2745, "active_energy_kcal": 322.8,
+  "hr_points": 38, "route_points": 1204}, &hellip;]
+</pre>
+    <h3 style="margin-top:1rem">PG state (what the server database holds)</h3>
+<table>
+  <tr><th>table</th><th>rows</th><th>note</th></tr>
+  <tr><td>raw_samples</td><td>29.5M</td><td>40 monthly partitions, latest-wins upserts</td></tr>
+  <tr><td>daily_rollups</td><td>110K</td><td>KST-day aggregates, &lt;1s @ 90d query</td></tr>
+  <tr><td>workouts</td><td>980</td><td>HR series + GPS routes attached</td></tr>
+  <tr><td>raw_ingest</td><td>1,180</td><td>sha256 archive, 19 dups skipped</td></tr>
+  <tr><td>metric_dim</td><td>107</td><td>canonical units, is_cumulative</td></tr>
+  <tr><td>auth_log</td><td>2</td><td>401 attempts (audit: IP/UA only)</td></tr>
+</table>
+    <h3 style="margin-top:1rem">Slice status</h3>
+<p><span class="badge b-green">slice 1 — ingest validated</span> real HAE payloads archived &amp; verified
+<br><span class="badge b-blue">slice 2 — live</span> PG + MCP + backfill complete, hourly deltas &lt;5min</p>
+  </div>
+</div>
+</body>
+</html>

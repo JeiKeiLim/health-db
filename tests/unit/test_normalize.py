@@ -2,10 +2,16 @@
 
 Covers decomposition job slice-2-normalize acceptance: every documented
 data-point shape (plain qty, heart_rate Avg, blood-pressure split, sleep
-aggregated asleep-preference, sleep unaggregated), the unit policy
+aggregated totalSleep-precedence, sleep unaggregated), the unit policy
 (canonical match, kJ→kcal ÷ 4.184, non-canonical skip, pass-through),
 KST day computation (fixed +9h, midnight boundary), and workout
 normalization (kJ→kcal energies, heartRateData, route rows).
+
+Run 2026-09-17-normalizer-audit additions: the sleep value rule matrix
+(Watch asleep:0 sentinel → totalSleep, mixed-stage nights, AutoSleep naps,
+in-bed split to sleep_in_bed, loosened no-totalSleep recognition, all-zero
+skip accounting), fixture-locked to the census in
+tests/acceptance/parse_everything.py.
 """
 
 from __future__ import annotations
@@ -19,9 +25,25 @@ from health_db.normalize import (
     BLOOD_PRESSURE_DIASTOLIC,
     BLOOD_PRESSURE_SYSTOLIC,
     CUMULATIVE_UNITS,
+    ECG_SKIP,
+    HRN_KIND_HR,
+    HRN_KIND_HRV,
     KJ_PER_KCAL,
+    LB_PER_KG,
+    NOTIFICATION_SKIP,
+    SLEEP_IN_BED,
+    SLEEP_NO_VALUE,
+    ST_PER_KG,
+    UNIT_UNCONVERTIBLE,
+    EcgRow,
+    EcgVoltageRow,
+    HrnRow,
+    HrnSampleRow,
     SampleRow,
     WorkoutRow,
+    _ecg_rows,
+    _hrn_rows,
+    _qty_for_unit,
     _qty_of,
     _sum_qty_of,
     canonical_unit_of,
@@ -29,6 +51,7 @@ from health_db.normalize import (
     display_name,
     is_cumulative_unit,
     metric_rows,
+    metric_rows_detailed,
     workout_rows,
 )
 
@@ -186,20 +209,101 @@ class TestPlainQty:
         assert rows[0].source == "unknown"
 
 
-class TestCanonicalUnitSkip:
-    def test_weight_in_lb_is_skipped_not_converted(self):
+class TestCanonicalUnitConversion:
+    """Iron-law-4 amendment (run 2026-09-17-normalizer-audit §4, user-approved):
+    canonical metrics with a non-canonical declared unit are CONVERTED when
+    an exact factor exists; only units with no factor are skipped — visibly."""
+
+    def test_lb_converts_to_kg_exact_factor(self):
+        decision = _qty_for_unit("weight_body_mass", "lb", 160.0)
+        assert decision.skip_reason is None
+        # 160 / 2.20462 = 72.5748655097… (spec §4 factor ÷ 2.20462).
+        assert decision.row == pytest.approx((72.5748655, "kg"), abs=1e-6)
         rows = metric_rows(
             doc(
                 [
                     metric(
                         "weight_body_mass",
-                        [{"qty": 150, "date": "2026-09-08 10:00:00 +0900"}],
+                        [{"qty": 160, "date": "2026-09-08 10:00:00 +0900"}],
                         units="lb",
                     )
                 ]
             )
         )
+        assert rows[0].qty == pytest.approx(72.5748655)
+        assert rows[0].unit == "kg"
+
+    def test_st_converts_to_kg_exact_factor(self):
+        decision = _qty_for_unit("weight_body_mass", "st", 11.8)
+        assert decision.skip_reason is None
+        # 11.8 / 0.157473 = 74.9334806602… (spec §4 factor ÷ 0.157473).
+        assert decision.row == pytest.approx((74.9334807, "kg"), abs=1e-6)
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "weight_body_mass",
+                        [{"qty": 11.8, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="st",
+                    )
+                ]
+            )
+        )
+        assert rows[0].qty == pytest.approx(74.9334807)
+        assert rows[0].unit == "kg"
+
+    def test_degf_converts_to_degc_wrist_temperature_only(self):
+        decision = _qty_for_unit("apple_sleeping_wrist_temperature", "degF", 95.5)
+        assert decision.skip_reason is None
+        assert decision.row == pytest.approx((35.27777777777778, "degC"), abs=1e-9)
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "apple_sleeping_wrist_temperature",
+                        [{"qty": 95.5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="degF",
+                    )
+                ]
+            )
+        )
+        assert rows[0].qty == pytest.approx(35.27777777777778)
+        assert rows[0].unit == "degC"
+
+    def test_degf_not_converted_for_other_metrics(self):
+        # °F factor is pinned to the wrist-temperature metric only.
+        rows, skips = metric_rows_detailed(
+            doc(
+                [
+                    metric(
+                        "body_fat_percentage",
+                        [{"qty": 95.5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="degF",
+                    )
+                ]
+            )
+        )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
+
+    def test_lean_body_mass_lb_converts(self):
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "lean_body_mass",
+                        [{"qty": 100, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="lb",
+                    )
+                ]
+            )
+        )
+        assert rows[0].qty == pytest.approx(100 / 2.20462)
+        assert rows[0].unit == "kg"
+
+    def test_constants_are_exact_factors(self):
+        assert LB_PER_KG == 2.20462
+        assert ST_PER_KG == 0.157473
 
     def test_weight_in_kg_passes(self):
         rows = metric_rows(
@@ -215,37 +319,46 @@ class TestCanonicalUnitSkip:
         )
         assert sample_rows(rows) == [("weight_body_mass", "unknown", 68.0, "kg")]
 
-    @pytest.mark.parametrize("unit", ["st", "lb"])
-    def test_non_canonical_variants_skipped(self, unit: str):
-        rows = metric_rows(
+    def test_unconvertible_unit_skipped_and_counted(self):
+        # A fabricated unit with no exact factor: no row, but the drop is
+        # VISIBLE in the skip census (zero-silent-drops contract, spec §5).
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
                         "weight_body_mass",
-                        [{"qty": 1, "date": "2026-09-08 10:00:00 +0900"}],
-                        units=unit,
+                        [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="gal",
                     )
                 ]
             )
         )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
 
-    def test_temperature_in_degf_skipped(self):
-        rows = metric_rows(
+    def test_unconvertible_unit_direct_gate_reason(self):
+        decision = _qty_for_unit("weight_body_mass", "gal", 5.0)
+        assert decision.row is None
+        assert decision.skip_reason == UNIT_UNCONVERTIBLE
+
+    def test_bad_timestamp_not_counted_as_unit_skip(self):
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
-                        "apple_sleeping_wrist_temperature",
-                        [{"qty": 98.6, "date": "2026-09-08 10:00:00 +0900"}],
-                        units="degF",
+                        "weight_body_mass",
+                        [{"qty": 5, "date": "not-a-date"}],
+                        units="gal",
                     )
                 ]
             )
         )
         assert rows == []
+        assert skips == {}
 
-    def test_distance_in_mi_skipped(self):
-        rows = metric_rows(
+    def test_distance_in_mi_still_skipped(self):
+        # mi has no exact factor in this run: skipped but visibly counted.
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
@@ -257,6 +370,22 @@ class TestCanonicalUnitSkip:
             )
         )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
+
+    def test_pass_through_metric_any_unit_stored(self):
+        rows, skips = metric_rows_detailed(
+            doc(
+                [
+                    metric(
+                        "biotin",
+                        [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}],
+                        units="weird",
+                    )
+                ]
+            )
+        )
+        assert sample_rows(rows) == [("biotin", "unknown", 5.0, "weird")]
+        assert skips == {}
 
 
 class TestEnergyKjConversion:
@@ -291,8 +420,8 @@ class TestEnergyKjConversion:
         assert rows[0].qty == 100.0
         assert rows[0].unit == "kcal"
 
-    def test_active_energy_cal_skipped(self):
-        rows = metric_rows(
+    def test_active_energy_cal_skipped_and_counted(self):
+        rows, skips = metric_rows_detailed(
             doc(
                 [
                     metric(
@@ -304,6 +433,7 @@ class TestEnergyKjConversion:
             )
         )
         assert rows == []
+        assert skips == {UNIT_UNCONVERTIBLE: 1}
 
     def test_conversion_factor_parity(self):
         assert KJ_PER_KCAL == 4.184
@@ -358,7 +488,8 @@ class TestBloodPressureSplit:
 
 
 # ---------------------------------------------------------------------------
-# Special shape: sleep_analysis aggregated (asleep-preference)
+# Special shape: sleep_analysis aggregated (totalSleep-precedence, run
+# 2026-09-17-normalizer-audit) + in-bed split + skip accounting
 # ---------------------------------------------------------------------------
 
 
@@ -375,26 +506,260 @@ def sleep_agg(**overrides: object) -> dict:
     return base
 
 
+# Fixture matrix mirrored verbatim from tests/acceptance/parse_everything.py
+# (census-locked real-corpus subsets; scenario numbers refer to that file).
+WATCH_NIGHT = {
+    "date": "2026-09-17 00:00:00 +0900",
+    "source": "Jongkuk의 Apple Watch",
+    "asleep": 0,
+    "inBed": 0,
+    "awake": 0.05,
+    "core": 3.5891,
+    "deep": 1.0473,
+    "rem": 1.7382,
+    "totalSleep": 6.3746,
+    "sleepStart": "2026-09-16 22:11:12 +0900",
+    "sleepEnd": "2026-09-17 04:58:30 +0900",
+}
+
+MIXED_STAGE_NIGHT = {
+    "date": "2024-10-09 00:00:00 +0900",
+    "source": "Jongkuk의 Apple Watch",
+    "asleep": 2.05,
+    "inBed": 0,
+    "awake": 0.4167,
+    "core": 3.1875,
+    "deep": 1.0938,
+    "rem": 1.9375,
+    "totalSleep": 8.268799999999999,
+    "sleepStart": "2024-10-08 21:50:00 +0900",
+    "sleepEnd": "2024-10-09 06:20:00 +0900",
+}
+
+AUTOSLEEP_NAP = {
+    "date": "2026-09-17 00:00:00 +0900",
+    "source": "AutoSleep",
+    "asleep": 0.5833333333333334,
+    "inBed": 0.5833333333333334,
+    "awake": 0,
+    "core": 0,
+    "deep": 0,
+    "rem": 0,
+    "totalSleep": 0.5833333333333334,
+    "sleepStart": "2026-09-16 17:35:00 +0900",
+    "sleepEnd": "2026-09-16 18:10:00 +0900",
+}
+
+INBED_ONLY = {
+    "date": "2018-04-02 00:00:00 +0900",
+    "source": "시계",
+    "asleep": 0,
+    "inBed": 7.332222222222223,
+    "awake": 0,
+    "core": 0,
+    "deep": 0,
+    "rem": 0,
+    "totalSleep": 0,
+    "sleepStart": "2018-04-02 00:15:08 +0900",
+    "sleepEnd": "2018-04-02 07:35:04 +0900",
+}
+
+NO_TOTALSLEEP_SHAPE = {
+    "date": "2026-09-08",
+    "asleep": 7.0,
+    "core": 3.5,
+    "deep": 1.5,
+    "rem": 2.0,
+}
+
+
 class TestSleepAggregated:
-    def test_asleep_wins_when_present(self):
+    def test_totalsleep_wins_over_asleep(self):
+        # Re-derived (run spec §1): totalSleep has absolute precedence when
+        # > 0 — the old asleep-preference test (7.5 total + 6.8 asleep →
+        # 6.8) is superseded; 49/50 mixed-stage backfill nights have
+        # totalSleep == core+deep+rem+asleep exactly.
         rows = metric_rows(doc([metric("sleep_analysis", [sleep_agg()], units="hr")]))
         assert len(rows) == 1
-        assert rows[0].qty == 6.8
+        assert rows[0].qty == 7.5
         assert rows[0].ts == datetime(2026, 9, 8, 0, 0, tzinfo=KST)
 
-    def test_core_deep_rem_sum_when_asleep_absent(self):
-        rows = metric_rows(doc([metric("sleep_analysis", [sleep_agg(asleep=None)], units="hr")]))
+    def test_asleep_wins_when_totalsleep_absent(self):
+        # The no-totalSleep shape (scenario 9): asleep carries the value.
+        rows = metric_rows(
+            doc([metric("sleep_analysis", [sleep_agg(totalSleep=None)], units="hr")])
+        )
+        assert rows[0].qty == 6.8
+
+    def test_core_deep_rem_sum_when_asleep_and_totalsleep_zero(self):
+        rows = metric_rows(
+            doc(
+                [
+                    metric(
+                        "sleep_analysis",
+                        [sleep_agg(totalSleep=0, asleep=0)],
+                        units="hr",
+                    )
+                ]
+            )
+        )
         assert rows[0].qty == pytest.approx(5.7)
 
-    def test_missing_rem_skips_when_no_asleep(self):
+    def test_missing_rem_skips_when_no_other_value(self):
         rows = metric_rows(
-            doc([metric("sleep_analysis", [sleep_agg(asleep=None, rem=None)], units="hr")])
+            doc(
+                [
+                    metric(
+                        "sleep_analysis",
+                        [sleep_agg(totalSleep=None, asleep=None, rem=None)],
+                        units="hr",
+                    )
+                ]
+            )
         )
         assert rows == []
 
     def test_unparseable_date_skips(self):
         rows = metric_rows(doc([metric("sleep_analysis", [sleep_agg(date="nope")], units="hr")]))
         assert rows == []
+
+    def test_missing_date_skips(self):
+        # Loosened dispatch still requires `date`.
+        rows = metric_rows(
+            doc([metric("sleep_analysis", [sleep_agg(date=None)], units="hr")])
+        )
+        assert rows == []
+
+
+class TestSleepFixtureMatrix:
+    """The 7 real-corpus fixture shapes (census-locked acceptance parity).
+
+    Mirrors TestSleepValueRule / TestSleepInBed in
+    tests/acceptance/parse_everything.py at the pure-normalizer level.
+    """
+
+    def test_watch_night_asleep_sentinel_stores_totalsleep(self):
+        # Scenario 1: asleep:0 is the REST Watch sentinel (1,150/1,200
+        # backfill nights) — it must never be stored as the value.
+        rows, skips = metric_rows_detailed(
+            doc([metric("sleep_analysis", [WATCH_NIGHT], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 6.3746)
+        ]
+        assert skips == {}
+
+    def test_mixed_stage_night_totalsleep_not_stage_sum(self):
+        # Scenario 2: totalSleep 8.2687… wins; core+deep+rem (6.2188) would
+        # lose the real asleep stage (2.05).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [MIXED_STAGE_NIGHT], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [("sleep_analysis", 8.268799999999999)]
+
+    def test_autosleep_nap_asleep_value(self):
+        # Scenario 3: AutoSleep nap → asleep 0.5833…. The nap row also
+        # carries inBed == asleep (real AutoSleep shape): the in-bed split
+        # emits BOTH rows (in-bed time is independent of stage totals).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [AUTOSLEEP_NAP], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 0.5833333333333334),
+            (SLEEP_IN_BED, 0.5833333333333334),
+        ]
+
+    def test_inbed_only_becomes_sleep_in_bed(self):
+        # Scenario 4: zero sleep_analysis rows; one sleep_in_bed row.
+        rows, skips = metric_rows_detailed(
+            doc([metric("sleep_analysis", [INBED_ONLY], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [(SLEEP_IN_BED, 7.332222222222223)]
+        assert skips == {}, "in-bed split is a legitimate row, not a skipped point"
+
+    def test_no_totalsleep_shape_recognized(self):
+        # Scenario 9: {date, asleep, core, deep, rem} without totalSleep —
+        # loosened dispatch recognizes it; asleep wins (7.0).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [NO_TOTALSLEEP_SHAPE], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [("sleep_analysis", 7.0)]
+
+    def test_all_zero_point_skipped_and_counted(self):
+        # Anti-scenario: every sleep field 0 and inBed 0 → no row, and the
+        # skip must be visible for job-4's response accounting.
+        point = {
+            "date": "2026-09-08 00:00:00 +0900",
+            "asleep": 0,
+            "inBed": 0,
+            "core": 0,
+            "deep": 0,
+            "rem": 0,
+            "totalSleep": 0,
+        }
+        rows, skips = metric_rows_detailed(doc([metric("sleep_analysis", [point], units="hr")]))
+        assert rows == []
+        assert skips == {SLEEP_NO_VALUE: 1}
+
+    def test_inbed_plus_stages_emits_both_rows(self):
+        # In-bed time is independent of stage totals: both rows emitted.
+        point = {**WATCH_NIGHT, "inBed": 7.5}
+        rows, _ = metric_rows_detailed(doc([metric("sleep_analysis", [point], units="hr")]))
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 6.3746),
+            (SLEEP_IN_BED, 7.5),
+        ]
+
+    def test_nap_inbed_matches_asleep_emits_both(self):
+        # AutoSleep nap rows carry inBed == asleep: sleep_analysis keeps the
+        # nap value AND the in-bed row is emitted (independent surfaces).
+        rows, _ = metric_rows_detailed(
+            doc([metric("sleep_analysis", [AUTOSLEEP_NAP], units="hr")])
+        )
+        assert [(r.name, r.qty) for r in rows] == [
+            ("sleep_analysis", 0.5833333333333334),
+            (SLEEP_IN_BED, 0.5833333333333334),
+        ]
+
+
+class TestSleepInBedRegistration:
+    def test_display_name(self):
+        assert display_name(SLEEP_IN_BED) == "Sleep In-Bed"
+
+    def test_not_in_canonical_units(self):
+        # Pass-through unit policy: sleep_in_bed must NOT join
+        # CANONICAL_UNITS (spec §1; declared unit 'hr' passes through).
+        assert canonical_unit_of(SLEEP_IN_BED) is None
+
+    def test_in_bed_row_carries_declared_unit(self):
+        rows, _ = metric_rows_detailed(doc([metric("sleep_analysis", [INBED_ONLY], units="hr")]))
+        assert rows[0].unit == "hr"
+
+    def test_is_cumulative_seeds_from_hr(self):
+        assert is_cumulative_unit("hr") is True
+
+
+class TestMetricRowsDetailedSkips:
+    """The job-4 seam: skip counts surface without changing the row contract."""
+
+    def test_metric_rows_unchanged_contract(self):
+        rows = metric_rows(doc([metric("sleep_analysis", [WATCH_NIGHT], units="hr")]))
+        assert [(r.name, r.qty) for r in rows] == [("sleep_analysis", 6.3746)]
+
+    def test_detailed_returns_always_present_dict(self):
+        _, skips = metric_rows_detailed(doc([metric("step_count", [])]))
+        assert skips == {}
+
+    def test_unrecognized_shape_not_counted_here(self):
+        # Partial-overlap shapes are payloads.py's unknown_formats concern;
+        # this counter only owns recognized-but-valueless sleep points.
+        _, skips = metric_rows_detailed(doc([metric("blood_pressure", [{"systolic": 120}])]))
+        assert skips == {}
+
+    def test_mixed_points_counted_individually(self):
+        points = [WATCH_NIGHT, INBED_ONLY, {"date": "2026-09-08", "totalSleep": 0, "asleep": 0}]
+        _, skips = metric_rows_detailed(doc([metric("sleep_analysis", points, units="hr")]))
+        assert skips == {SLEEP_NO_VALUE: 1}
 
 
 # ---------------------------------------------------------------------------
@@ -662,7 +1027,7 @@ def real_workout(**overrides: object) -> dict:
         "id": "A1B2C3D4-0000-1111-2222-333344445555",
         "name": "Outdoor Run",
         "start": "2023-01-15 18:57:52 +0900",
-        "end": "2023-01-15 19:46:55 +0900",
+        "end": "2023-01-15 18:46:55 +0900",
         "duration": 2700.0,
         "activeEnergyBurned": {"qty": 2100.0, "units": "kJ"},
         "activeEnergy": [
@@ -696,8 +1061,8 @@ def real_workout(**overrides: object) -> dict:
             {"date": "2023-01-15 18:59:00 +0900", "Avg": 132.75, "Min": 128, "Max": 134},
         ],
         "heartRateRecovery": [
-            {"date": "2023-01-15 19:46:55 +0900", "Avg": 165, "Min": 165, "Max": 165},
-            {"date": "2023-01-15 19:47:00 +0900", "Avg": 166, "Min": 166, "Max": 166},
+            {"date": "2023-01-15 18:46:55 +0900", "Avg": 165, "Min": 165, "Max": 165},
+            {"date": "2023-01-15 18:47:00 +0900", "Avg": 166, "Min": 166, "Max": 166},
         ],
         "route": [
             {
@@ -840,3 +1205,612 @@ class TestQtyHelpers:
         assert _sum_qty_of(4) == 4.0
         assert _sum_qty_of({"qty": 4}) == 4.0
         assert _sum_qty_of([{"qty": 1}, 2, {"value": 3}]) == 6.0
+
+
+# ---------------------------------------------------------------------------
+# ECG session lane (job-5, run 2026-09-17-normalizer-audit §2)
+# ---------------------------------------------------------------------------
+
+
+# Fixture mirrored verbatim from tests/acceptance/parse_everything.py
+# (scenario 5 — trimmed real backfill ECG shape).
+ECG_SESSION = {
+    "source": "심전도",
+    "start": "2025-10-12 10:45:06 +0900",
+    "end": "2025-10-12 10:45:36 +0900",
+    "samplingFrequency": 512,
+    "numberOfVoltageMeasurements": 3,
+    "classification": "정상 동율 리듬",
+    "averageHeartRate": 68,
+    "voltageMeasurements": [
+        {"voltage": -10.528610229492188, "date": 1760233506.862702, "units": "mcV"},
+        {"voltage": -8.956151962280273, "date": 1760233506.864655, "units": "mcV"},
+        {"voltage": -7.150754928777866, "date": 1760233506.8666081, "units": "mcV"},
+    ],
+}
+
+
+def ecg_doc(sessions: list | None = None) -> dict:
+    data: dict = {}
+    if sessions is not None:
+        data["ecg"] = sessions
+    return {"data": data}
+
+
+def good_ts() -> datetime:
+    return datetime(2025, 10, 12, 1, 45, 6, 862702, tzinfo=UTC)
+
+
+class TestEcgRows:
+    def test_session_fixture_fields(self):
+        sessions, voltages, skips = _ecg_rows(ecg_doc([ECG_SESSION]))
+        assert skips == {}
+        assert len(sessions) == 1
+        row = sessions[0]
+        assert isinstance(row, EcgRow)
+        assert row.ref == 0
+        assert row.source_name == "심전도"
+        assert row.start_ts == datetime(2025, 10, 12, 10, 45, 6, tzinfo=KST)
+        assert row.end_ts == datetime(2025, 10, 12, 10, 45, 36, tzinfo=KST)
+        assert row.classification == "정상 동율 리듬"
+        assert row.sampling_frequency == 512
+        assert row.average_heart_rate == 68
+        assert row.voltage_count == 3
+
+    def test_three_voltages_with_unix_epoch_ts(self):
+        # VERIFIED (42/42 real backfill sessions): voltage `date` is UNIX
+        # epoch seconds — first voltage == session start ±2s under this
+        # reading (2025-10-12 01:45:06.862702 UTC == 10:45:06 KST). The
+        # predecessor CF-absolute reading would yield year-2056 values.
+        _, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION]))
+        assert len(voltages) == 3
+        first = voltages[0]
+        assert isinstance(first, EcgVoltageRow)
+        assert first.ts == datetime(2025, 10, 12, 1, 45, 6, 862702, tzinfo=UTC), (
+            "voltage ts must be UNIX-epoch converted (never CF-absolute)"
+        )
+        assert [v.seq for v in voltages] == [0, 1, 2]
+        assert [v.ecg_ref for v in voltages] == [0, 0, 0]
+        assert voltages[0].voltage == pytest.approx(-10.528610229492188)
+        assert voltages[1].voltage == pytest.approx(-8.956151962280273)
+        assert voltages[2].voltage == pytest.approx(-7.150754928777866)
+        assert {v.units for v in voltages} == {"mcV"}
+
+    def test_first_voltage_within_2s_of_session_start(self):
+        # The verification invariant from the spec, asserted directly:
+        # session start (KST 10:45:06 == 01:45:06 UTC) vs first voltage ts.
+        sessions, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION]))
+        delta = abs((voltages[0].ts - sessions[0].start_ts).total_seconds())
+        assert delta <= 2.0
+
+    def test_ref_links_sessions_to_their_voltages(self):
+        # Two sessions: each voltage row's ecg_ref must track its session's
+        # index (pipeline resolves ref → DB id; job-7).
+        second = {
+            **ECG_SESSION,
+            "start": "2025-10-13 10:45:06 +0900",
+            "end": "2025-10-13 10:45:36 +0900",
+        }
+        sessions, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION, second]))
+        assert [s.ref for s in sessions] == [0, 1]
+        assert {v.ecg_ref for v in voltages} == {0, 1}
+        assert len([v for v in voltages if v.ecg_ref == 0]) == 3
+        assert len([v for v in voltages if v.ecg_ref == 1]) == 3
+
+    def test_unparseable_start_session_skipped_and_counted(self):
+        bad = {**ECG_SESSION, "start": "bogus"}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad, ECG_SESSION]))
+        assert len(sessions) == 1 and sessions[0].ref == 1
+        assert len(voltages) == 3 and all(v.ecg_ref == 1 for v in voltages)
+        assert skips == {ECG_SKIP: 1}
+
+    def test_missing_start_session_skipped(self):
+        bad = {k: v for k, v in ECG_SESSION.items() if k != "start"}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_unparseable_end_session_skipped(self):
+        # end_ts is NOT NULL (spec §6): an unparseable end cannot store.
+        bad = {**ECG_SESSION, "end": "bogus"}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_empty_voltage_measurements_session_skipped(self):
+        bad = {**ECG_SESSION, "voltageMeasurements": []}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == [] and voltages == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_missing_voltage_measurements_session_skipped(self):
+        bad = {k: v for k, v in ECG_SESSION.items() if k != "voltageMeasurements"}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_non_string_source_session_skipped(self):
+        # source is the natural key's first half — a non-string cannot upsert.
+        bad = {**ECG_SESSION, "source": 42}
+        sessions, _, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == []
+        assert skips == {ECG_SKIP: 1}
+
+    def test_malformed_voltage_point_dropped_individually(self):
+        # A partially-corrupt session keeps its good samples; bad points
+        # are counted, never silent (zero-silent-drops contract).
+        bad_measurements = [
+            {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"},
+            {"voltage": None, "date": 1760233506.864655, "units": "mcV"},
+            {"voltage": -2.0, "date": "not-a-number", "units": "mcV"},
+            {"date": 1760233506.866608, "units": "mcV"},
+            "not-a-dict",
+        ]
+        bad = {**ECG_SESSION, "voltageMeasurements": bad_measurements}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].seq == 0
+        assert skips == {ECG_SKIP: 4}
+
+    def test_voltage_epoch_out_of_range_dropped_and_counted(self):
+        # JSON-legal but unrepresentable epoch (1e300): the point is dropped
+        # and counted under 'ecg' — the session and its good sibling survive
+        # (never-crash discipline: OverflowError/OSError must not poison the
+        # full-history backfill payload).
+        good = {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}
+        bad_point = {"voltage": -2.0, "date": 1e300, "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [good, bad_point]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].ts == good_ts()
+        assert skips == {ECG_SKIP: 1}
+
+    def test_voltage_epoch_nan_dropped_and_counted(self):
+        # float('nan') passes the numeric-type gate but cannot be converted.
+        bad_point = {"voltage": -1.0, "date": float("nan"), "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [bad_point]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == [] and voltages == []
+        # 1 dropped point + 1 session (empty-after-drops, matching the
+        # empty_voltage_measurements skip semantics).
+        assert skips == {ECG_SKIP: 2}
+
+    def test_voltage_epoch_negative_huge_dropped_and_counted(self):
+        # -1e300 is finite but far below any representable epoch.
+        bad_point = {"voltage": -1.0, "date": -1e300, "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [bad_point]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert sessions == [] and voltages == []
+        assert skips == {ECG_SKIP: 2}
+
+    def test_valid_voltage_survives_alongside_out_of_range_point(self):
+        # A corrupt point must not poison its good siblings in the SAME
+        # session (partial-corruption discipline, mirrored from the
+        # malformed-point test above).
+        good = {"voltage": 3.5, "date": 1760233506.862702, "units": "mcV"}
+        mixed = [
+            {"voltage": -2.0, "date": float("inf"), "units": "mcV"},
+            good,
+            {"voltage": -2.0, "date": float("-inf"), "units": "mcV"},
+        ]
+        bad = {**ECG_SESSION, "voltageMeasurements": mixed}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1
+        assert len(voltages) == 1 and voltages[0].seq == 1
+        assert voltages[0].voltage == pytest.approx(3.5)
+
+    def test_voltage_huge_int_value_dropped_and_counted(self):
+        # 10**400 parses natively as a Python int (bypassing the JSON parse
+        # guards) and overflows _num's float() — the point drops+counts
+        # under 'ecg' while the session and its valid sibling voltages are
+        # kept (never-crash discipline, mirror of the HRN value guard).
+        good = {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}
+        bad_point = {"voltage": 10**400, "date": 1760233506.864655, "units": "mcV"}
+        bad = {**ECG_SESSION, "voltageMeasurements": [bad_point, good]}
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].seq == 1
+        assert voltages[0].voltage == pytest.approx(-1.0)
+        assert skips == {ECG_SKIP: 1}
+
+    def test_voltage_value_nan_inf_dropped_and_counted(self):
+        # NaN/inf voltage values are finite-agnostic scalars the numeric
+        # gate accepts but the double-precision column cannot mean — the
+        # sibling HRN guard's exception path also covers int(NaN)'s
+        # ValueError here via float() conversion.
+        good = {"voltage": -1.0, "date": 1760233506.862702, "units": "mcV"}
+        bad = {
+            **ECG_SESSION,
+            "voltageMeasurements": [
+                {"voltage": float("nan"), "date": 1760233506.864655, "units": "mcV"},
+                {"voltage": float("inf"), "date": 1760233506.866608, "units": "mcV"},
+                good,
+            ],
+        }
+        sessions, voltages, skips = _ecg_rows(ecg_doc([bad]))
+        assert len(sessions) == 1, "session itself is still usable"
+        assert len(voltages) == 1 and voltages[0].seq == 2
+        assert voltages[0].voltage == pytest.approx(-1.0)
+        assert skips == {ECG_SKIP: 2}
+        assert voltages[0].ts == good_ts()
+        assert skips == {ECG_SKIP: 2}
+
+    def test_optional_session_scalars_default_to_none(self):
+        # spec §6: classification / sampling_frequency / average_heart_rate
+        # are nullable; numberOfVoltageMeasurements falls back to the parsed
+        # array length when absent.
+        minimal = {
+            "source": "심전도",
+            "start": "2025-10-12 10:45:06 +0900",
+            "end": "2025-10-12 10:45:36 +0900",
+            "voltageMeasurements": ECG_SESSION["voltageMeasurements"],
+        }
+        sessions, voltages, _ = _ecg_rows(ecg_doc([minimal]))
+        row = sessions[0]
+        assert row.classification is None
+        assert row.sampling_frequency is None
+        assert row.average_heart_rate is None
+        assert row.voltage_count == 3, "declared count absent → parsed length"
+        assert len(voltages) == 3
+
+    def test_non_dict_session_skipped(self):
+        sessions, _, skips = _ecg_rows(ecg_doc(["nope", 42, ECG_SESSION]))
+        assert [s.ref for s in sessions] == [2]
+        assert skips == {ECG_SKIP: 2}
+
+    def test_absent_or_non_list_lane_yields_nothing_no_skips(self):
+        # An absent lane is not a drop; a malformed lane value likewise
+        # yields nothing (defensive parity with metric_rows/workout_rows).
+        assert _ecg_rows(ecg_doc(None)) == ([], [], {})
+        assert _ecg_rows(ecg_doc([])) == ([], [], {})
+        assert _ecg_rows({}) == ([], [], {})
+        assert _ecg_rows({"data": {"ecg": "nope"}}) == ([], [], {})
+        assert _ecg_rows(None) == ([], [], {})
+
+    def test_lane_absent_from_metrics_payload_no_skips(self):
+        # A normal metrics payload carries no `ecg` key: zero skips.
+        document = doc([metric("step_count", [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}])])
+        assert _ecg_rows(document) == ([], [], {})
+
+    def test_frozen_dataclasses(self):
+        sessions, voltages, _ = _ecg_rows(ecg_doc([ECG_SESSION]))
+        with pytest.raises(Exception):
+            sessions[0].voltage_count = 9  # type: ignore[misc]
+        with pytest.raises(Exception):
+            voltages[0].voltage = 0.0  # type: ignore[misc]
+
+
+class TestEcgVoltageBatchConstant:
+    def test_batch_cap_is_10k(self):
+        # spec §8: ECG voltage inserts are batched ≤10k per executemany
+        # (600,000 voltages on the real backfill); the constant lives next
+        # to the normalizer so the pipeline imports one shared value.
+        from health_db.normalize import ECG_VOLTAGE_BATCH
+
+        assert ECG_VOLTAGE_BATCH == 10_000
+
+
+# ---------------------------------------------------------------------------
+# Heart-rate-notification lane (job-6, run 2026-09-17-normalizer-audit §3)
+# ---------------------------------------------------------------------------
+
+
+# Fixture mirrored verbatim from tests/acceptance/parse_everything.py
+# (scenario 6 — trimmed real backfill notification shape).
+HR_NOTIFICATION = {
+    "start": "2026-06-16T04:39:20Z",
+    "end": "2026-06-16T04:39:20Z",
+    "threshold": 118,
+    "heartNotification": "high_heart_rate_notification",
+    "source": {"name": "Jongkuk의 Apple Watch", "identifier": "com.apple.health.A1B2C3D4"},
+    "heartRateData": [
+        {
+            "hrUnits": "count/min",
+            "heartRate": 132,
+            "timestamp": {
+                "measurementDuration": 0,
+                "end": "2026-06-16T04:40:29Z",
+                "units": "s",
+                "start": "2026-06-16T04:40:29Z",
+            },
+        },
+    ],
+    "hrvData": [
+        {
+            "units": "ms",
+            "hrv": 27.413754219876544,
+            "timestamp": {
+                "measurementDuration": 59.5,
+                "end": "2026-06-16T04:31:05Z",
+                "units": "s",
+                "start": "2026-06-16T04:30:05Z",
+            },
+        },
+    ],
+}
+
+
+def hrn_doc(events: list | None = None) -> dict:
+    data: dict = {}
+    if events is not None:
+        data["heartRateNotifications"] = events
+    return {"data": data}
+
+
+class TestHrnRows:
+    def test_event_fixture_fields(self):
+        events, samples, skips = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        assert skips == {}
+        assert len(events) == 1
+        row = events[0]
+        assert isinstance(row, HrnRow)
+        assert row.ref == 0
+        assert row.source_name == "Jongkuk의 Apple Watch"
+        # ISO-8601 Z strings via _parse_ts (never the HAE %z space format).
+        assert row.start_ts == datetime(2026, 6, 16, 4, 39, 20, tzinfo=UTC)
+        assert row.end_ts == datetime(2026, 6, 16, 4, 39, 20, tzinfo=UTC)
+        assert row.kind == "high_heart_rate_notification"
+        assert row.threshold == 118
+
+    def test_samples_hr_and_hrv_with_pinned_keys(self):
+        # Value/unit keys are pinned from the real corpus: HR reads
+        # heartRate/hrUnits, HRV reads hrv/units; ts = timestamp.start.
+        events, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        assert len(samples) == 2
+        hr = samples[0]
+        assert isinstance(hr, HrnSampleRow)
+        assert hr.hrn_ref == 0
+        assert hr.kind == HRN_KIND_HR
+        assert hr.value == 132.0
+        assert hr.units == "count/min"
+        assert hr.ts == datetime(2026, 6, 16, 4, 40, 29, tzinfo=UTC)
+        hrv = samples[1]
+        assert hrv.kind == HRN_KIND_HRV
+        assert hrv.value == pytest.approx(27.413754219876544)
+        assert hrv.units == "ms"
+        assert hrv.ts == datetime(2026, 6, 16, 4, 30, 5, tzinfo=UTC)
+
+    def test_kind_values_are_hr_and_hrv(self):
+        _, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        assert {s.kind for s in samples} == {"hr", "hrv"}
+
+    def test_ref_links_events_to_their_samples(self):
+        # Two events: each sample's hrn_ref must track its event's index
+        # (pipeline resolves ref → DB id; job-7).
+        second = {
+            **HR_NOTIFICATION,
+            "start": "2026-06-17T04:39:20Z",
+            "end": "2026-06-17T04:39:20Z",
+        }
+        events, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION, second]))
+        assert [e.ref for e in events] == [0, 1]
+        assert {s.hrn_ref for s in samples} == {0, 1}
+        assert len([s for s in samples if s.hrn_ref == 0]) == 2
+        assert len([s for s in samples if s.hrn_ref == 1]) == 2
+
+    def test_event_without_samples_still_stored(self):
+        # Unlike ECG (empty voltages → session skipped), an event with no
+        # sample lists still carries its own data (kind/threshold/window) —
+        # heartRateData/hrvData are optional (spec §3 shape).
+        minimal = {
+            "start": "2026-06-16T04:39:20Z",
+            "end": "2026-06-16T04:39:20Z",
+            "heartNotification": "high_heart_rate_notification",
+            "source": {"name": "Watch"},
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([minimal]))
+        assert len(events) == 1 and samples == []
+        assert skips == {}
+
+    def test_unparseable_start_event_skipped_and_counted(self):
+        bad = {**HR_NOTIFICATION, "start": "bogus"}
+        events, samples, skips = _hrn_rows(hrn_doc([bad, HR_NOTIFICATION]))
+        assert len(events) == 1 and events[0].ref == 1
+        assert len(samples) == 2 and all(s.hrn_ref == 1 for s in samples)
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_missing_start_event_skipped(self):
+        bad = {k: v for k, v in HR_NOTIFICATION.items() if k != "start"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_unparseable_end_event_skipped(self):
+        # end_ts is NOT NULL (spec §6): an unparseable end cannot store.
+        bad = {**HR_NOTIFICATION, "end": "bogus"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_missing_kind_event_skipped(self):
+        # kind is NOT NULL (spec §6): a missing heartNotification cannot store.
+        bad = {k: v for k, v in HR_NOTIFICATION.items() if k != "heartNotification"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_non_string_kind_event_skipped(self):
+        bad = {**HR_NOTIFICATION, "heartNotification": 42}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_missing_source_name_event_skipped(self):
+        # source.name is the natural key's first half — a non-string cannot
+        # upsert latest-wins (real corpus shape: {name, identifier} dict).
+        bad = {**HR_NOTIFICATION, "source": {"identifier": "com.apple.health"}}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_non_dict_source_event_skipped(self):
+        bad = {**HR_NOTIFICATION, "source": "Jongkuk의 Apple Watch"}
+        events, _, skips = _hrn_rows(hrn_doc([bad]))
+        assert events == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_malformed_sample_dropped_individually(self):
+        # A partially-corrupt event keeps its good samples; bad points are
+        # counted, never silent (zero-silent-drops contract).
+        bad_hr_data = [
+            {
+                "hrUnits": "count/min",
+                "heartRate": 132,
+                "timestamp": {"start": "2026-06-16T04:40:29Z"},
+            },
+            {
+                "hrUnits": "count/min",
+                "heartRate": None,
+                "timestamp": {"start": "2026-06-16T04:51:29Z"},
+            },
+            {"hrUnits": "count/min", "timestamp": {"start": "2026-06-16T04:52:29Z"}},
+            {"hrUnits": "count/min", "heartRate": 130, "timestamp": {"start": "not-a-date"}},
+            {"hrUnits": "count/min", "heartRate": 131},
+            "not-a-dict",
+        ]
+        bad = {**HR_NOTIFICATION, "heartRateData": bad_hr_data}
+        events, samples, skips = _hrn_rows(hrn_doc([bad]))
+        assert len(events) == 1, "event itself is still usable"
+        hr_samples = [s for s in samples if s.kind == HRN_KIND_HR]
+        assert len(hr_samples) == 1 and hr_samples[0].value == 132.0
+        assert skips == {NOTIFICATION_SKIP: 5}
+
+    def test_missing_timestamp_object_dropped_and_counted(self):
+        bad = {
+            **HR_NOTIFICATION,
+            "heartRateData": [{"hrUnits": "count/min", "heartRate": 132}],
+            "hrvData": [],
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([bad]))
+        assert len(events) == 1
+        assert samples == []
+        assert skips == {NOTIFICATION_SKIP: 1}
+
+    def test_timestamp_end_used_only_via_start(self):
+        # The sample ts comes from timestamp.start — NOT timestamp.end
+        # (corpus shape: HRV start 04:30:05 ≠ end 04:31:05).
+        _, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        hrv = next(s for s in samples if s.kind == HRN_KIND_HRV)
+        assert hrv.ts == datetime(2026, 6, 16, 4, 30, 5, tzinfo=UTC)
+
+    def test_units_missing_defaults_to_none(self):
+        # units column is nullable (spec §6): a missing unit string → None,
+        # not a crash and not a skip.
+        event = {
+            **HR_NOTIFICATION,
+            "heartRateData": [
+                {"heartRate": 132, "timestamp": {"start": "2026-06-16T04:40:29Z"}}
+            ],
+            "hrvData": [],
+        }
+        _, samples, skips = _hrn_rows(hrn_doc([event]))
+        assert len(samples) == 1
+        assert samples[0].units is None
+        assert skips == {}
+
+    def test_threshold_missing_defaults_to_none(self):
+        # threshold is nullable (spec §6).
+        event = {k: v for k, v in HR_NOTIFICATION.items() if k != "threshold"}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events[0].threshold is None
+        assert skips == {}
+
+    def test_threshold_int32_min_is_kept(self):
+        # Signed INT32 bound: -2147483648 fits the INTEGER column (spec §6),
+        # so it must be kept — the old abs() comparison wrongly dropped it.
+        event = {**HR_NOTIFICATION, "threshold": -2147483648}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events[0].threshold == -2147483648
+        assert skips == {}
+
+    def test_threshold_nan_dropped_and_counted(self):
+        # int(float('nan')) raises ValueError — the event must drop+count,
+        # never crash the payload (zero-silent-drops discipline).
+        event = {**HR_NOTIFICATION, "threshold": float("nan")}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events == []
+        assert skips.get("notification") == 1
+
+    def test_threshold_huge_int_overflow_dropped_and_counted(self):
+        # 10**400 parses natively as a Python int (bypassing the JSON parse
+        # guards) and overflows float() — drop+count under the pinned §5 key.
+        event = {**HR_NOTIFICATION, "threshold": 10**400}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events == []
+        assert skips.get("notification") == 1
+
+    def test_threshold_309_digit_int_dropped_and_counted(self):
+        # Finite 1e308 converts to a 309-digit int that cannot fit the
+        # INTEGER column — drop+count, not an upsert crash in job-7.
+        event = {**HR_NOTIFICATION, "threshold": int(1e308)}
+        events, _, skips = _hrn_rows(hrn_doc([event]))
+        assert events == []
+        assert skips.get("notification") == 1
+
+    def test_overflow_event_dropped_valid_sibling_kept(self):
+        # A corrupt event must not poison its siblings: the huge-threshold
+        # event drops+counts; the valid event parses with its samples.
+        bad = {**HR_NOTIFICATION, "threshold": 10**400, "source": {"name": "bad"}}
+        good = {
+            **HR_NOTIFICATION,
+            "source": {"name": "good"},
+            "threshold": 2147483647,
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([bad, good]))
+        assert [e.source_name for e in events] == ["good"]
+        assert events[0].threshold == 2147483647
+        assert len([s for s in samples if s.kind == HRN_KIND_HR]) == 1
+        assert len([s for s in samples if s.kind == HRN_KIND_HRV]) == 1
+        assert skips.get("notification") == 1
+
+    def test_sample_huge_int_heart_rate_dropped_and_counted(self):
+        # Sample values also bypass the JSON guards; a huge int overflows
+        # _num's float() — the individual sample drops+counted, the event
+        # and its good siblings are kept (partial-corruption contract).
+        event = {
+            **HR_NOTIFICATION,
+            "heartRateData": [
+                {
+                    "hrUnits": "count/min",
+                    "heartRate": 10**400,
+                    "timestamp": {"start": "2026-06-16T04:40:29Z"},
+                },
+                {
+                    "hrUnits": "count/min",
+                    "heartRate": 132,
+                    "timestamp": {"start": "2026-06-16T04:51:29Z"},
+                },
+            ],
+            "hrvData": [],
+        }
+        events, samples, skips = _hrn_rows(hrn_doc([event]))
+        assert len(events) == 1, "overflow poisons the sample, not the event"
+        hr_samples = [s for s in samples if s.kind == HRN_KIND_HR]
+        assert len(hr_samples) == 1 and hr_samples[0].value == 132.0
+        assert skips.get("notification") == 1
+
+    def test_non_dict_event_skipped(self):
+        events, _, skips = _hrn_rows(hrn_doc(["nope", 42, HR_NOTIFICATION]))
+        assert [e.ref for e in events] == [2]
+        assert skips == {NOTIFICATION_SKIP: 2}
+
+    def test_absent_or_non_list_lane_yields_nothing_no_skips(self):
+        # An absent lane is not a drop; a malformed lane value likewise
+        # yields nothing (defensive parity with _ecg_rows/metric_rows).
+        assert _hrn_rows(hrn_doc(None)) == ([], [], {})
+        assert _hrn_rows(hrn_doc([])) == ([], [], {})
+        assert _hrn_rows({}) == ([], [], {})
+        assert _hrn_rows({"data": {"heartRateNotifications": "nope"}}) == ([], [], {})
+        assert _hrn_rows(None) == ([], [], {})
+
+    def test_lane_absent_from_metrics_payload_no_skips(self):
+        # A normal metrics payload carries no heartRateNotifications key.
+        document = doc([metric("step_count", [{"qty": 5, "date": "2026-09-08 10:00:00 +0900"}])])
+        assert _hrn_rows(document) == ([], [], {})
+
+    def test_frozen_dataclasses(self):
+        events, samples, _ = _hrn_rows(hrn_doc([HR_NOTIFICATION]))
+        with pytest.raises(Exception):
+            events[0].threshold = 9  # type: ignore[misc]
+        with pytest.raises(Exception):
+            samples[0].value = 0.0  # type: ignore[misc]

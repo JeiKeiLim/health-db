@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>health-db — Slice 2 Wireframe: Database + MCP + Deploy</title>
+<style>
+  body { font-family: "SF Mono", Menlo, monospace; background: #0f172a; color: #e2e8f0; margin: 2rem; font-size: 13px; }
+  h1 { font-family: -apple-system, sans-serif; font-size: 1.2rem; }
+  h2 { font-family: -apple-system, sans-serif; font-size: 0.9rem; color: #94a3b8; font-weight: 400; }
+  .cols { display: flex; gap: 1.5rem; }
+  .panel { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 1rem; flex: 1; }
+  .panel h3 { margin: 0 0 0.5rem; font-size: 0.8rem; color: #60a5fa; font-weight: 600; }
+  pre { background: #0b1120; border-radius: 6px; padding: 0.7rem; overflow-x: auto; font-size: 11.5px; line-height: 1.55; margin: 0 0 1rem; }
+  .ok { color: #22c55e; } .err { color: #ef4444; } .dim { color: #64748b; } .amber { color: #f59e0b; }
+  .note { color: #94a3b8; font-family: -apple-system, sans-serif; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Slice 2 — Database + MCP Query Surface + server Deploy</h1>
+<h2>Additive on slice 1: same ingest endpoint, now persisting; MCP server live; backfill replayed; phone deltas land hourly.</h2>
+
+<div class="cols">
+  <div class="panel">
+    <h3>Replay + backfill (uses slice-1 archive)</h3>
+<pre><span class="dim">$ uv run health-db replay data/archive/2026/09/08/</span>
+{"replayed": 37, "stored": 37, "duplicates_skipped": 0,
+ "days_affected": 2, "rollups_recomputed": 2}
+
+<span class="dim"># full-history backfill from phone (Manual Export, yearly):</span>
+2024 chunk → 61 POSTs → <span class="ok">stored</span>
+2025 chunk → 63 POSTs → <span class="ok">stored</span>
+2026 chunk → 44 POSTs → <span class="ok">stored</span>
+re-run 2024 chunk → <span class="ok">all duplicates — row counts unchanged</span>
+<span class="dim">(idempotency proven)</span></pre>
+    <h3>PG verification</h3>
+<pre><span class="dim">$ psql healthdb -c "SELECT count(*) FROM raw_samples"</span>
+  <span class="ok">31,207,412</span>
+<span class="dim">$ psql healthdb -c "\d+ raw_samples"</span>
+  Partitioned by RANGE (ts), 40 partitions
+  day_kst: generated (+9h fixed) &middot; PK (metric,source,ts)
+<span class="dim"># rollup query timing (90-day range):</span>
+  Planning/Execution: <span class="ok">38 ms</span>  &middot;  partition pruning OK
+</pre>
+  </div>
+
+  <div class="panel">
+    <h3>MCP server — agent client config + session</h3>
+<pre><span class="dim"># claude / MCP client config:</span>
+{ "mcpServers": { "health": {
+  "url": "http://<server-host>:8100/mcp",
+  "headers": {"Authorization": "Bearer <token>&hellip;"}}}}
+
+&gt; freshness_check()
+{"latest_complete_day": "2026-09-08", "stale": []}
+
+&gt; query_day("2026-09-07", "step_count")
+{"day": "2026-09-07", "sum": 8413, "unit": "count"}
+
+&gt; get_workout_detail("CC8B17E2-&hellip;")
+{"name": "Running", "hr": [38 pts], "route": [1204 pts]}
+
+&gt; raw_samples(metric="heart_rate", limit=10)
+{"rows": 10, "next_offset": 10, "total_estimate": 3.9M}
+  <span class="dim">← paginated, bounded output</span>
+
+<span class="dim"># no token:</span>
+&gt; connect to :8100/mcp  → <span class="err">401</span> (all endpoints)</pre>
+    <h3>Failure semantics now live</h3>
+<pre><span class="dim"># stop postgres container, wait for a sync:</span>
+503 {"error":"db_unavailable","retry_after":300}
+  <span class="amber">← payload archived, marked pending</span>
+<span class="dim"># start container:</span>
+<span class="dim">$ uv run health-db replay --pending</span>
+{"replayed": 1, "outcome": "stored"}  <span class="ok">nothing lost</span></pre>
+    <p class="note">Deployment: one Docker image on Docker &rarr; <server-host>:5432; hourly delta observed &lt;5 min past the hour; post-deploy validation green before predecessor retires.</p>
+  </div>
+</div>
+</body>
+</html>

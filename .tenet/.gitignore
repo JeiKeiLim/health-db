@@ -1,0 +1,7 @@
+# Live SQLite runtime state. Do not track this in Git.
+.state/
+
+# Portable snapshots created by `tenet db snapshot` are safe to track.
+!state-snapshot/
+!state-snapshot/**
+state-snapshot/*.tmp-*

@@ -22,6 +22,7 @@ from health_db.cli import (
     build_parser,
     emit_json,
     main,
+    run_ecg_detail,
     run_metrics,
     run_query_day,
     run_raw,
@@ -51,8 +52,14 @@ class FakeQueries:
     def list_metrics(self, pool=None):  # noqa: ANN001
         return self._record("list_metrics", (), {"pool": pool})
 
-    def list_workouts(self, start, end, pool=None):  # noqa: ANN001
-        return self._record("list_workouts", (start, end), {"pool": pool})
+    def list_workouts(  # noqa: ANN001
+        self, frm="", to="", limit=500, offset=0, pool=None
+    ):
+        return self._record(
+            "list_workouts",
+            (frm, to),
+            {"limit": limit, "offset": offset, "pool": pool},
+        )
 
     def get_trends(self, metric, window, pool=None):  # noqa: ANN001
         return self._record("get_trends", (metric, window), {"pool": pool})
@@ -74,8 +81,40 @@ class FakeQueries:
             },
         )
 
-    def get_workout_detail(self, workout_id, pool=None):  # noqa: ANN001
-        return self._record("get_workout_detail", (workout_id,), {"pool": pool})
+    def get_workout_detail(  # noqa: ANN001
+        self, workout_id, route_offset=0, route_limit=1000, pool=None
+    ):
+        return self._record(
+            "get_workout_detail",
+            (workout_id,),
+            {"route_offset": route_offset, "route_limit": route_limit, "pool": pool},
+        )
+
+    def list_ecgs(self, frm="", to="", limit=50, pool=None):  # noqa: ANN001
+        return self._record("list_ecgs", (frm, to), {"limit": limit, "pool": pool})
+
+    def get_ecg_detail(  # noqa: ANN001
+        self, ecg_id, voltage_offset=0, voltage_limit=1000, pool=None
+    ):
+        return self._record(
+            "get_ecg_detail",
+            (ecg_id,),
+            {"voltage_offset": voltage_offset, "voltage_limit": voltage_limit, "pool": pool},
+        )
+
+    def list_heart_notifications(self, frm="", to="", limit=50, pool=None):  # noqa: ANN001
+        return self._record(
+            "list_heart_notifications", (frm, to), {"limit": limit, "pool": pool}
+        )
+
+    def list_sleep_sessions(  # noqa: ANN001
+        self, frm="", to="", limit=100, offset=0, pool=None
+    ):
+        return self._record(
+            "list_sleep_sessions",
+            (frm, to),
+            {"limit": limit, "offset": offset, "pool": pool},
+        )
 
 
 @pytest.fixture()
@@ -125,15 +164,39 @@ class TestHandlers:
         run_query_day(["2026-09-08"], q=fq, pool=1)
         assert fq.calls[0][2]["metric"] == ""
 
-    def test_workouts_passes_from_to(self, fq, out):
+    def test_workouts_passes_from_to_and_paging(self, fq, out):
         rc = run_workouts(["--from", "2026-09-01", "--to", "2026-09-08"], q=fq, pool=1)
         assert rc == 0
-        assert fq.calls == [("list_workouts", ("2026-09-01", "2026-09-08"), {"pool": 1})]
+        assert fq.calls == [
+            (
+                "list_workouts",
+                ("2026-09-01", "2026-09-08"),
+                {"limit": 500, "offset": 0, "pool": 1},
+            )
+        ]
         assert parsed_out(out)["args"] == ["2026-09-01", "2026-09-08"]
 
     def test_workouts_defaults_empty(self, fq, out):
         run_workouts([], q=fq, pool=1)
         assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 500
+        assert fq.calls[0][2]["offset"] == 0
+
+    def test_workouts_paging_flags_propagate(self, fq, out):
+        rc = run_workouts(
+            ["--from", "2018-01-01", "--to", "2018-12-31", "--limit", "100",
+             "--offset", "200"],
+            q=fq,
+            pool=1,
+        )
+        assert rc == 0
+        assert fq.calls == [
+            (
+                "list_workouts",
+                ("2018-01-01", "2018-12-31"),
+                {"limit": 100, "offset": 200, "pool": 1},
+            )
+        ]
 
     def test_trends_passes_metric_and_window(self, fq, out):
         run_trends(["step_count", "--window", "30"], q=fq, pool=1)
@@ -187,13 +250,123 @@ class TestHandlers:
 
     def test_routes_passes_uuid(self, fq, out):
         run_routes(["abc-123"], q=fq, pool=1)
-        assert fq.calls == [("get_workout_detail", ("abc-123",), {"pool": 1})]
+        assert fq.calls == [
+            (
+                "get_workout_detail",
+                ("abc-123",),
+                {"route_offset": 0, "route_limit": 1000, "pool": 1},
+            )
+        ]
         assert parsed_out(out)["args"] == ["abc-123"]
+
+    def test_routes_passes_paging(self, fq, out):
+        run_routes(["abc-123", "--offset", "1000", "--limit", "500"], q=fq, pool=1)
+        assert fq.calls == [
+            (
+                "get_workout_detail",
+                ("abc-123",),
+                {"route_offset": 1000, "route_limit": 500, "pool": 1},
+            )
+        ]
+
+    def test_routes_paging_defaults(self, fq, out):
+        run_routes(["abc-123"], q=fq, pool=1)
+        recorded = fq.calls[0][2]
+        assert recorded["route_offset"] == 0
+        assert recorded["route_limit"] == 1000
+
+    def test_routes_help_shows_paging_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            run_routes(["--help"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 0
+        text = capsys.readouterr().out
+        for flag in ("--offset", "--limit"):
+            assert flag in text
+
+    def test_routes_limit_must_be_int(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            run_routes(["abc-123", "--limit", "many"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 2
+
+    def test_ecgs_passes_range_and_limit(self, fq, out):
+        rc = cli.run_ecgs(
+            ["--from", "2026-09-01", "--to", "2026-09-17", "--limit", "5"], q=fq, pool=1
+        )
+        assert rc == 0
+        assert fq.calls == [("list_ecgs", ("2026-09-01", "2026-09-17"), {"limit": 5, "pool": 1})]
+        assert parsed_out(out)["called"] == "list_ecgs"
+
+    def test_ecgs_defaults(self, fq, out):
+        cli.run_ecgs([], q=fq, pool=1)
+        assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 50
+
+    def test_ecg_detail_passes_id_and_paging(self, fq, out):
+        rc = cli.run_ecg_detail(
+            ["7", "--voltage-offset", "1000", "--voltage-limit", "2000"], q=fq, pool=1
+        )
+        assert rc == 0
+        assert fq.calls == [
+            (
+                "get_ecg_detail",
+                ("7",),
+                {"voltage_offset": 1000, "voltage_limit": 2000, "pool": 1},
+            )
+        ]
+        assert parsed_out(out)["args"] == ["7"]
+
+    def test_ecg_detail_defaults(self, fq, out):
+        cli.run_ecg_detail(["7"], q=fq, pool=1)
+        recorded = fq.calls[0][2]
+        assert recorded["voltage_offset"] == 0
+        assert recorded["voltage_limit"] == 1000
+
+    def test_hrn_passes_range_and_limit(self, fq, out):
+        cli.run_hrn(["--from", "2026-06-01", "--to", "2026-06-30", "--limit", "5"], q=fq, pool=1)
+        assert fq.calls == [
+            ("list_heart_notifications", ("2026-06-01", "2026-06-30"), {"limit": 5, "pool": 1})
+        ]
+
+    def test_hrn_defaults(self, fq, out):
+        cli.run_hrn([], q=fq, pool=1)
+        assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 50
 
     def test_freshness_no_options(self, fq, out):
         rc = COMMANDS["freshness"]([], q=fq, pool=1)
         assert rc == 0
         assert fq.calls == [("freshness_check", (), {"pool": 1})]
+
+    def test_sleep_passes_range_and_paging(self, fq, out):
+        rc = cli.run_sleep(
+            ["--from", "2026-09-27", "--to", "2026-09-28", "--limit", "10", "--offset", "20"],
+            q=fq,
+            pool=1,
+        )
+        assert rc == 0
+        assert fq.calls == [
+            (
+                "list_sleep_sessions",
+                ("2026-09-27", "2026-09-28"),
+                {"limit": 10, "offset": 20, "pool": 1},
+            )
+        ]
+        assert parsed_out(out)["called"] == "list_sleep_sessions"
+
+    def test_sleep_defaults(self, fq, out):
+        rc = cli.run_sleep([], q=fq, pool=1)
+        assert rc == 0
+        assert fq.calls[0][1] == ("", "")
+        assert fq.calls[0][2]["limit"] == 100
+        assert fq.calls[0][2]["offset"] == 0
+
+    def test_sleep_help_shows_range_and_paging_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.run_sleep(["--help"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 0
+        text = capsys.readouterr().out
+        for flag in ("--from", "--to", "--limit", "--offset"):
+            assert flag in text
 
 
 class TestHandlerUsageErrors:
@@ -349,13 +522,20 @@ class TestEmitJson:
 
 
 class TestCommandSurface:
-    def test_exactly_the_seven_spec_commands(self):
+    def test_exactly_the_ten_spec_commands(self):
+        """Slice-2's 7 commands + run 2026-09-17-normalizer-audit §7's
+        ecgs / ecg-detail / hrn + run 2026-09-28-mcp-analysis-parity's
+        sleep (thin wrappers over the tools)."""
         assert sorted(COMMANDS) == [
+            "ecg-detail",
+            "ecgs",
             "freshness",
+            "hrn",
             "metrics",
             "query-day",
             "raw",
             "routes",
+            "sleep",
             "trends",
             "workouts",
         ]
@@ -381,12 +561,13 @@ class TestCommandSurface:
         assert "--metric" in text
         assert "YYYY-MM-DD" in text
 
-    def test_workouts_help_shows_from_to(self, capsys):
+    def test_workouts_help_shows_from_to_and_paging(self, capsys):
         with pytest.raises(SystemExit) as exc:
             run_workouts(["--help"], q=FakeQueries(), pool=1)
         assert exc.value.code == 0
         text = capsys.readouterr().out
         assert "--from" in text and "--to" in text
+        assert "--limit" in text and "--offset" in text
 
     def test_raw_help_shows_pagination_flags(self, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -394,6 +575,14 @@ class TestCommandSurface:
         assert exc.value.code == 0
         text = capsys.readouterr().out
         for flag in ("--metric", "--limit", "--offset", "--from", "--to"):
+            assert flag in text
+
+    def test_ecg_detail_help_shows_paging_flags(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            run_ecg_detail(["--help"], q=FakeQueries(), pool=1)
+        assert exc.value.code == 0
+        text = capsys.readouterr().out
+        for flag in ("--voltage-offset", "--voltage-limit"):
             assert flag in text
 
     def test_main_dispatches_to_handler_with_remaining_argv(self, monkeypatch, out, err):
