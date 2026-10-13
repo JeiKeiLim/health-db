@@ -217,7 +217,7 @@ class TestCanonicalUnitConversion:
     def test_lb_converts_to_kg_exact_factor(self):
         decision = _qty_for_unit("weight_body_mass", "lb", 160.0)
         assert decision.skip_reason is None
-        # 160 / 2.20462 = 72.5748655097… (spec §4 factor ÷ 2.20462).
+        # 160 / 2.20462 = 72.5748655… (spec §4 factor ÷ 2.20462).
         assert decision.row == pytest.approx((72.5748655, "kg"), abs=1e-6)
         rows = metric_rows(
             doc(

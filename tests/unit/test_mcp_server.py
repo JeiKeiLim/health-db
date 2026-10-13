@@ -81,7 +81,9 @@ class TestMcpAllowedHosts:
         assert "127.0.0.1:*" in hosts
 
     def test_multiple_hosts_split_and_trimmed(self):
-        hosts = mcp_server.mcp_allowed_hosts({"MCP_ALLOWED_HOSTS": "healthbox.example:8443, server.local ,,"})
+        hosts = mcp_server.mcp_allowed_hosts(
+            {"MCP_ALLOWED_HOSTS": "healthbox.example:8443, server.local ,,"}
+        )
         assert hosts[-2:] == ["healthbox.example:8443", "server.local"]
 
     def test_blank_entries_dropped(self):

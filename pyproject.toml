@@ -2,6 +2,7 @@
 name = "health-db"
 version = "0.1.0"
 description = "Self-hosted Health Auto Export ingest + PostgreSQL storage + MCP query platform"
+authors = [{ name = "Jongkuk Lim" }]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -29,6 +30,9 @@ health = "health_db.cli:main"
 [build-system]
 requires = ["uv_build>=0.8.10,<0.9"]
 build-backend = "uv_build"
+
+[project.urls]
+Repository = "https://github.com/JeiKeiLim/health-db"
 
 [tool.uv.build-backend]
 module-name = "health_db"

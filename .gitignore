@@ -24,3 +24,6 @@ AGENTS.md
 
 # session artifacts
 opencode_session.txt
+
+# split_backfill chunk output (scripts/split_backfill.py)
+backfill-chunk-*.json

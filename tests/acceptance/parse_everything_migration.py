@@ -448,7 +448,7 @@ class TestUpsertTargetsWork:
         pg.execute(
             """
             INSERT INTO heart_rate_notifications (source_name, start_ts, end_ts, kind)
-            VALUES ('Apple Watch', '2026-06-16 04:39:20+00', '2026-06-16 04:49:20+00',
+            VALUES ('Apple Watch', '2026-06-16 04:39:20+00', '2026-06-16 04:39:20+00',
                     'high_heart_rate_notification')
             """
         )

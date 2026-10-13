@@ -154,7 +154,7 @@ class TestWrongShapeRejected:
         assert report.skipped["ecg"] == 0
 
     def test_lane_only_hrn_payload_accepted(self):
-        hrn = [{"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:49:20Z",
+        hrn = [{"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:39:20Z",
                 "heartNotification": "high_heart_rate_notification",
                 "source": {"name": "Watch"}}]
         report = parse(json.dumps(
@@ -624,7 +624,7 @@ class TestCountingAndClassification:
         )
         report_hrn = parse(json.dumps(
             {"data": {"metrics": [], "workouts": [], "heartRateNotifications": [
-                {"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:49:20Z",
+                {"start": "2026-06-16T04:39:20Z", "end": "2026-06-16T04:39:20Z",
                  "heartNotification": "high_heart_rate_notification",
                  "source": {"name": "Watch"}}]}}
         ).encode())

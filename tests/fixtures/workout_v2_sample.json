@@ -1,0 +1,266 @@
+{
+  "data": {
+    "metrics": [],
+    "workouts": [
+      {
+        "id": "a1b2c3d4-0001-1111-2222-333344445555",
+        "name": "Outdoor Run",
+        "start": "2023-01-15 18:57:52 +0900",
+        "end": "2023-01-15 18:46:55 +0900",
+        "duration": 2700.0,
+        "activeEnergyBurned": {
+          "qty": 2100.0,
+          "units": "kJ"
+        },
+        "activeEnergy": [
+          {
+            "date": "2023-01-15 18:57:52 +0900",
+            "qty": 30.0,
+            "source": "Apple Watch",
+            "units": "kJ"
+          },
+          {
+            "date": "2023-01-15 18:58:52 +0900",
+            "qty": 40.0,
+            "source": "Apple Watch",
+            "units": "kJ"
+          },
+          {
+            "units": "kJ",
+            "qty": 50.0,
+            "date": "2023-01-15 18:59:52 +0900",
+            "source": "Apple Watch"
+          }
+        ],
+        "totalEnergy": {
+          "qty": 2400.0,
+          "units": "kJ"
+        },
+        "basalEnergy": [
+          {
+            "date": "2023-01-15 18:57:52 +0900",
+            "qty": 5.0,
+            "source": "Apple Watch",
+            "units": "kJ"
+          },
+          {
+            "source": "Apple Watch",
+            "units": "kJ",
+            "qty": 6.0,
+            "date": "2023-01-15 18:58:52 +0900"
+          },
+          {
+            "qty": 7.0,
+            "units": "kJ",
+            "date": "2023-01-15 18:59:52 +0900",
+            "source": "Apple Watch"
+          }
+        ],
+        "distance": {
+          "qty": 6.5,
+          "units": "km"
+        },
+        "avgHeartRate": {
+          "units": "count/min",
+          "qty": 150.0
+        },
+        "maxHeartRate": {
+          "qty": 180,
+          "units": "count/min"
+        },
+        "temperature": {
+          "units": "degC",
+          "qty": 22.0
+        },
+        "humidity": {
+          "qty": 50,
+          "units": "%"
+        },
+        "intensity": {
+          "units": "kcal/hr·kg",
+          "qty": 9.0
+        },
+        "stepCadence": {
+          "qty": 170.0,
+          "units": "count/min"
+        },
+        "speed": {
+          "qty": 8.0,
+          "units": "km/hr"
+        },
+        "elevationUp": {
+          "qty": 80.0,
+          "units": "m"
+        },
+        "stepCount": [
+          {
+            "units": "count",
+            "qty": 170.0,
+            "date": "2023-01-15 18:57:52 +0900",
+            "source": "Apple Watch"
+          },
+          {
+            "source": "Apple Watch",
+            "units": "count",
+            "date": "2023-01-15 18:58:52 +0900",
+            "qty": 171.0
+          },
+          {
+            "source": "Apple Watch",
+            "qty": 172.0,
+            "date": "2023-01-15 18:59:52 +0900",
+            "units": "count"
+          }
+        ],
+        "walkingAndRunningDistance": [
+          {
+            "qty": 0.15,
+            "source": "Apple Watch",
+            "date": "2023-01-15 18:57:52 +0900",
+            "units": "km"
+          },
+          {
+            "date": "2023-01-15 18:58:52 +0900",
+            "qty": 0.16,
+            "source": "Apple Watch",
+            "units": "km"
+          },
+          {
+            "source": "Apple Watch",
+            "qty": 0.14,
+            "units": "km",
+            "date": "2023-01-15 18:59:52 +0900"
+          }
+        ],
+        "heartRateData": [
+          {
+            "date": "2023-01-15 17:57:00 +0900",
+            "Max": 105,
+            "Min": 105,
+            "Avg": 105,
+            "units": "count/min"
+          },
+          {
+            "Min": 101,
+            "units": "count/min",
+            "Max": 124,
+            "date": "2023-01-15 17:58:00 +0900",
+            "Avg": 114
+          },
+          {
+            "Max": 134,
+            "units": "count/min",
+            "date": "2023-01-15 17:59:00 +0900",
+            "Min": 128,
+            "Avg": 132.75
+          },
+          {
+            "date": "2023-01-15 18:00:00 +0900",
+            "Max": 139,
+            "Min": 132,
+            "Avg": 136.5,
+            "units": "count/min"
+          },
+          {
+            "date": "2023-01-15 18:01:00 +0900",
+            "Max": 143,
+            "Min": 134,
+            "Avg": 138.75,
+            "units": "count/min"
+          }
+        ],
+        "heartRateRecovery": [
+          {
+            "units": "count/min",
+            "Avg": 165,
+            "date": "2023-01-15 18:46:55 +0900",
+            "Min": 165,
+            "Max": 165
+          },
+          {
+            "Avg": 166,
+            "date": "2023-01-15 18:47:00 +0900",
+            "Min": 166,
+            "units": "count/min",
+            "Max": 166
+          },
+          {
+            "Avg": 162,
+            "date": "2023-01-15 18:47:08 +0900",
+            "Min": 162,
+            "Max": 162,
+            "units": "count/min"
+          },
+          {
+            "Avg": 159,
+            "date": "2023-01-15 18:47:16 +0900",
+            "Min": 159,
+            "Max": 159,
+            "units": "count/min"
+          },
+          {
+            "Avg": 152,
+            "date": "2023-01-15 18:47:24 +0900",
+            "Min": 152,
+            "Max": 152,
+            "units": "count/min"
+          }
+        ],
+        "route": [
+          {
+            "course": 203.05,
+            "latitude": 12.34,
+            "timestamp": "2023-01-15 18:57:52 +0900",
+            "longitude": 56.78,
+            "verticalAccuracy": 3.31,
+            "speed": 0.35,
+            "horizontalAccuracy": 3.45,
+            "altitude": 40.02
+          },
+          {
+            "speed": 1.55,
+            "course": 225.27,
+            "altitude": 40.01,
+            "latitude": 12.3401,
+            "horizontalAccuracy": 3.29,
+            "longitude": 56.7801,
+            "timestamp": "2023-01-15 18:57:54 +0900",
+            "verticalAccuracy": 2.93
+          },
+          {
+            "course": 223.66,
+            "speed": 1.82,
+            "latitude": 12.3402,
+            "altitude": 40.0,
+            "longitude": 56.7802,
+            "horizontalAccuracy": 3.19,
+            "timestamp": "2023-01-15 18:57:55 +0900",
+            "verticalAccuracy": 2.86
+          },
+          {
+            "course": 222.01,
+            "speed": 1.96,
+            "latitude": 12.3403,
+            "altitude": 40.0,
+            "longitude": 56.7803,
+            "horizontalAccuracy": 3.12,
+            "timestamp": "2023-01-15 18:57:56 +0900",
+            "verticalAccuracy": 2.84
+          },
+          {
+            "course": 221.5,
+            "speed": 2.05,
+            "latitude": 12.3404,
+            "altitude": 39.95,
+            "longitude": 56.7804,
+            "horizontalAccuracy": 3.04,
+            "timestamp": "2023-01-15 18:57:57 +0900",
+            "verticalAccuracy": 2.72
+          }
+        ],
+        "isIndoor": false,
+        "location": "Outdoor"
+      }
+    ]
+  }
+}

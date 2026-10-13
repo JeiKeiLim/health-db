@@ -3,7 +3,7 @@
 Self-hosted Apple Health data platform: the **Health Auto Export (HAE)** iOS app POSTs
 JSON v2 exports to a FastAPI ingest service, which archives every payload verbatim
 (archive-first), normalizes it, and stores it in PostgreSQL. Queries are served by an
-MCP streamable-HTTP server (9 tools + 3 resources, Bearer auth) with a thin CLI wrapper
+MCP streamable-HTTP server (12 tools + 3 resources, Bearer auth) with a thin CLI wrapper
 for dev testing. Runs as a single Docker container next to any PostgreSQL 18 instance.
 
 ```
@@ -32,6 +32,11 @@ None = last page) · `get_workout_detail(id, route_offset?, route_limit?)` — H
 inline; GPS route paged (default 1000, max 10000; `route_count` + `next_route_offset`
 None = last page) · `get_trends(metric, window)` ·
 `freshness_check()` · `raw_samples(metric?, from?, to?, limit, offset)` ·
+`list_ecgs(from?, to?, limit)` — paged (default 50, max 500; classification, avg HR,
+voltage count included) · `get_ecg_detail(id, voltage_offset?, voltage_limit?)` —
+voltage samples paged (default 1000, max 10000; `next_voltage_offset` None = last
+page) · `list_heart_notifications(from?, to?, limit)` — paged (default 50, max 500;
+nested HR/HRV samples included) ·
 `list_sleep_sessions(from?, to?, limit, offset)` — one row per recognized aggregated-sleep
 record (per-source rows never merged; durations in hours verbatim)
 
@@ -193,8 +198,8 @@ History is backfilled through the same ingest endpoint — no SQLite migration.
 >    docker exec health-db health-replay --dir data/archive --force
 >    ```
 > 3. Verify the repair via MCP before starting the backfill —
->    `query_day` for 2026-09-15/16/17 on `sleep_analysis` must return
->    6.21 / 6.34 / 6.37 (not 0.0).
+>    `query_day` for a few recent days on `sleep_analysis` must return
+>    non-zero sleep totals (not 0.0).
 > 4. Only then run the backfill chunks below (ECG/notifications and unit
 >    conversions are exercised on first ingestion).
 
@@ -237,7 +242,7 @@ payloads removed from both the `raw_ingest` DB archive and the on-disk archive �
 the resurrection path is gone. No cleanup script exists anymore; a fresh
 `health-replay --dir data/archive --force` cannot re-emit the probes.
 
-## Post-deploy validation (post-deploy procedure)
+## Post-deploy validation
 
 1. Day 0: backfill completes (above); `GET /api/ingest/stats` shows
    `stored` ≈ chunk count, `quarantined: 0`, `unauthorized_attempts: 0`.

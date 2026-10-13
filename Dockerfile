@@ -1,8 +1,8 @@
 # check=skip=SecretsUsedInArgOrEnv
 # health-db single-service image: ingest (:8000) + MCP (:8100) + CLI tools.
 # Secrets are NEVER baked in — values arrive as environment variables at
-# container start (.env via compose env_file for the Project path, or the
-# Docker wizard's Environment tab). Build: docker build -t health-db .
+# container start (.env via compose env_file, or your orchestrator's env
+# settings). Build: docker build -t health-db .
 
 FROM python:3.12-slim-bookworm
 
